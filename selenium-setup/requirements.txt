@@ -1,0 +1,5 @@
+selenium
+cryptography
+requests
+gspread
+google-auth

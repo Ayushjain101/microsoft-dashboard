@@ -1,0 +1,41 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+.venv/
+venv/
+
+# Credentials & secrets
+service_account.json
+google_creds.json
+credentials.json
+*.pfx
+*.pem
+*.p12
+.env
+dulcet-metric-489118-j1-*.json
+
+# Output directories
+selenium-setup/output/
+api-scripts/output/
+
+# Large / binary files
+*.mp4
+*.zip
+*.png
+
+# Node
+node_modules/
+package-lock.json
+
+# Claude internal
+.claude/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
