@@ -199,7 +199,7 @@ EnvironmentFile=$ENV_FILE
 Environment=DISPLAY=:99
 Environment=PYTHONUNBUFFERED=1
 ExecStartPre=/usr/bin/bash -c 'Xvfb :99 -screen 0 1920x1080x24 -nolisten tcp &'
-ExecStart=$VENV_DIR/bin/celery -A app.tasks.celery_app worker -Q tenant_setup -c 2 --loglevel=info -n selenium@%H
+ExecStart=$VENV_DIR/bin/celery -A app.tasks.celery_app worker -Q tenant_setup -c 2 -Ofair --loglevel=info -n selenium@%H
 Restart=always
 RestartSec=5
 
