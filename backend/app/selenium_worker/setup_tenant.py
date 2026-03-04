@@ -333,6 +333,9 @@ def _grant_instantly_consent(token: str):
             logger.info("Instantly admin consent granted successfully")
             return
         except RuntimeError as e:
+            if "already exists" in str(e).lower() or "Permission entry already exists" in str(e):
+                logger.info("Instantly admin consent already granted")
+                return
             if attempt < 3 and "ObjectNotFound" in str(e):
                 time.sleep(10)
             else:
