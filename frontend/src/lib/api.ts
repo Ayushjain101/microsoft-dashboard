@@ -50,6 +50,25 @@ export const api = {
   listMailboxes: (tenantId: string) => request<{ mailboxes: any[] }>(`/api/v1/mailboxes/${tenantId}`),
   createMailboxes: (tenantId: string, data: { domain: string; mailbox_count: number; cf_email?: string; cf_api_key?: string }) =>
     request(`/api/v1/mailboxes/${tenantId}/create`, { method: "POST", body: JSON.stringify(data) }),
+  bulkCreateMailboxes: (items: { tenant_id: string; domain: string; mailbox_count: number }[], cfEmail?: string, cfApiKey?: string) =>
+    request<import("./types").BulkMailboxResult>("/api/v1/mailboxes/bulk-create", {
+      method: "POST",
+      body: JSON.stringify({ items, cf_email: cfEmail || undefined, cf_api_key: cfApiKey || undefined }),
+    }),
+  bulkCreateMailboxesCsv: async (file: File, cfEmail?: string, cfApiKey?: string) => {
+    const formData = new FormData();
+    formData.append("file", file);
+    const params = new URLSearchParams();
+    if (cfEmail) params.set("cf_email", cfEmail);
+    if (cfApiKey) params.set("cf_api_key", cfApiKey);
+    const qs = params.toString() ? `?${params.toString()}` : "";
+    const r = await fetch(`/api/v1/mailboxes/bulk-create-csv${qs}`, { method: "POST", body: formData, credentials: "include" });
+    if (!r.ok) {
+      const err = await r.json().catch(() => ({ detail: r.statusText }));
+      throw new Error(err.detail || r.statusText);
+    }
+    return r.json() as Promise<import("./types").BulkMailboxResult>;
+  },
   listMailboxJobs: () => request<{ jobs: any[] }>("/api/v1/mailbox-jobs"),
   stopJob: (jobId: string) => request(`/api/v1/mailbox-jobs/${jobId}/stop`, { method: "POST" }),
   enableDkim: (jobId: string) => request<{ status: string }>(`/api/v1/mailbox-jobs/${jobId}/enable-dkim`, { method: "POST" }),

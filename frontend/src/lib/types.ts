@@ -70,6 +70,12 @@ export interface TOTPEntry {
   period: number;
 }
 
+export interface BulkMailboxResult {
+  created: number;
+  jobs: { id: string; tenant_id: string; domain: string }[];
+  errors: { tenant_id: string; error: string }[];
+}
+
 export interface Alert {
   id: number;
   tenant_id: string;

@@ -3,8 +3,9 @@
 import csv
 import io
 import uuid
+from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Query
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, field_validator
 from sqlalchemy import select
@@ -102,6 +103,145 @@ async def list_all_mailboxes(
     result = await db.execute(query)
     mailboxes = result.scalars().all()
     return {"mailboxes": [_mailbox_to_out(m) for m in mailboxes]}
+
+
+class BulkMailboxItem(BaseModel):
+    tenant_id: str
+    domain: str
+    mailbox_count: int = 50
+    cf_email: str | None = None
+    cf_api_key: str | None = None
+
+    @field_validator("domain")
+    @classmethod
+    def validate_domain(cls, v: str) -> str:
+        v = v.strip().lower()
+        if not v or "." not in v or len(v) > 253:
+            raise ValueError("Invalid domain format")
+        return v
+
+    @field_validator("mailbox_count")
+    @classmethod
+    def validate_mailbox_count(cls, v: int) -> int:
+        if v < 1 or v > 500:
+            raise ValueError("mailbox_count must be between 1 and 500")
+        return v
+
+
+class BulkMailboxRequest(BaseModel):
+    items: list[BulkMailboxItem]
+    cf_email: str | None = None
+    cf_api_key: str | None = None
+
+
+async def _bulk_create_jobs(items: list[BulkMailboxItem], shared_cf_email: str | None, shared_cf_api_key: str | None, db: AsyncSession):
+    """Shared logic for bulk mailbox creation."""
+    from app.tasks.mailbox_pipeline import run_mailbox_pipeline
+
+    # Check for duplicate domains in request
+    domains = [item.domain for item in items]
+    if len(domains) != len(set(domains)):
+        raise HTTPException(status_code=400, detail="Duplicate domains in request")
+
+    created_jobs = []
+    errors = []
+
+    for item in items:
+        try:
+            tenant_id = uuid.UUID(item.tenant_id)
+        except ValueError:
+            errors.append({"tenant_id": item.tenant_id, "error": "Invalid tenant ID format"})
+            continue
+
+        tenant = await db.get(Tenant, tenant_id)
+        if not tenant:
+            errors.append({"tenant_id": item.tenant_id, "error": "Tenant not found"})
+            continue
+        if tenant.status != "complete":
+            errors.append({"tenant_id": item.tenant_id, "error": "Tenant setup must be complete first"})
+            continue
+
+        cf_email = item.cf_email or shared_cf_email
+        cf_api_key = item.cf_api_key or shared_cf_api_key
+
+        job = MailboxJob(
+            tenant_id=tenant_id,
+            domain=item.domain,
+            mailbox_count=item.mailbox_count,
+            cf_email=cf_email,
+            cf_api_key=encrypt(cf_api_key) if cf_api_key else None,
+            status="queued",
+            current_phase="Queued",
+        )
+        db.add(job)
+        await db.commit()
+        await db.refresh(job)
+
+        task = run_mailbox_pipeline.delay(str(job.id))
+        job.celery_task_id = task.id
+        await db.commit()
+
+        created_jobs.append({"id": str(job.id), "tenant_id": str(job.tenant_id), "domain": job.domain})
+
+    return {"created": len(created_jobs), "jobs": created_jobs, "errors": errors}
+
+
+@router.post("/bulk-create", status_code=201)
+async def bulk_create_mailboxes(body: BulkMailboxRequest, db: AsyncSession = Depends(get_db)):
+    if not body.items:
+        raise HTTPException(status_code=400, detail="No items provided")
+    return await _bulk_create_jobs(body.items, body.cf_email, body.cf_api_key, db)
+
+
+@router.post("/bulk-create-csv", status_code=201)
+async def bulk_create_mailboxes_csv(
+    file: UploadFile = File(...),
+    cf_email: Optional[str] = Query(None),
+    cf_api_key: Optional[str] = Query(None),
+    db: AsyncSession = Depends(get_db),
+):
+    content = await file.read()
+    try:
+        text = content.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        raise HTTPException(status_code=400, detail="Invalid file encoding, expected UTF-8")
+
+    reader = csv.DictReader(io.StringIO(text))
+    if not reader.fieldnames or "tenant_email" not in reader.fieldnames or "domain" not in reader.fieldnames:
+        raise HTTPException(status_code=400, detail="CSV must have 'tenant_email' and 'domain' columns")
+
+    items = []
+    errors = []
+    for row_num, row in enumerate(reader, start=2):
+        tenant_email = row.get("tenant_email", "").strip()
+        domain = row.get("domain", "").strip()
+        count_str = row.get("count", "50").strip()
+
+        if not tenant_email or not domain:
+            errors.append({"tenant_id": tenant_email or f"row {row_num}", "error": "Missing tenant_email or domain"})
+            continue
+
+        try:
+            count_val = int(count_str) if count_str else 50
+        except ValueError:
+            errors.append({"tenant_id": tenant_email, "error": f"Invalid count: {count_str}"})
+            continue
+
+        # Resolve tenant by admin_email
+        result = await db.execute(select(Tenant).where(Tenant.admin_email == tenant_email))
+        tenant = result.scalar_one_or_none()
+        if not tenant:
+            errors.append({"tenant_id": tenant_email, "error": "Tenant not found for this email"})
+            continue
+
+        items.append(BulkMailboxItem(tenant_id=str(tenant.id), domain=domain, mailbox_count=count_val))
+
+    if not items and errors:
+        return {"created": 0, "jobs": [], "errors": errors}
+
+    result = await _bulk_create_jobs(items, cf_email, cf_api_key, db)
+    result["errors"].extend(errors)
+    return result
 
 
 @router.get("/{tenant_id}/export")

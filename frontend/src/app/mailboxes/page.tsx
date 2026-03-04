@@ -1,22 +1,33 @@
 "use client";
 import { useCallback, useEffect, useState } from "react";
 import { api } from "@/lib/api";
-import { Tenant, MailboxJob, WSEvent } from "@/lib/types";
+import { Tenant, MailboxJob, WSEvent, BulkMailboxResult } from "@/lib/types";
 import { useWebSocket } from "@/hooks/useWebSocket";
-import { Plus, StopCircle, Download, ChevronDown, ChevronRight, Shield, ShieldCheck, Loader2 } from "lucide-react";
+import { Plus, StopCircle, Download, ChevronDown, ChevronRight, Shield, ShieldCheck, Loader2, Upload } from "lucide-react";
 import MailboxPipelineProgress from "@/components/mailboxes/MailboxPipelineProgress";
 
 export default function MailboxesPage() {
   const [tenants, setTenants] = useState<Tenant[]>([]);
   const [jobs, setJobs] = useState<MailboxJob[]>([]);
-  const [selectedTenant, setSelectedTenant] = useState("");
-  const [domain, setDomain] = useState("");
-  const [count, setCount] = useState(50);
-  const [cfEmail, setCfEmail] = useState("");
-  const [cfApiKey, setCfApiKey] = useState("");
   const [loading, setLoading] = useState(false);
   const [expandedJobs, setExpandedJobs] = useState<Set<string>>(new Set());
   const [dkimLoading, setDkimLoading] = useState<Set<string>>(new Set());
+  const [activeTab, setActiveTab] = useState<"quick" | "csv">("quick");
+
+  // Quick Create state
+  const [selectedTenants, setSelectedTenants] = useState<Set<string>>(new Set());
+  const [domainMap, setDomainMap] = useState<Record<string, string>>({});
+  const [count, setCount] = useState(50);
+  const [cfEmail, setCfEmail] = useState("");
+  const [cfApiKey, setCfApiKey] = useState("");
+
+  // CSV state
+  const [csvFile, setCsvFile] = useState<File | null>(null);
+  const [csvCfEmail, setCsvCfEmail] = useState("");
+  const [csvCfApiKey, setCsvCfApiKey] = useState("");
+
+  // Result banner
+  const [result, setResult] = useState<BulkMailboxResult | null>(null);
 
   const loadData = useCallback(async () => {
     try {
@@ -69,18 +80,60 @@ export default function MailboxesPage() {
     });
   }
 
-  async function handleCreate(e: React.FormEvent) {
+  function toggleTenant(tenantId: string) {
+    setSelectedTenants(prev => {
+      const next = new Set(prev);
+      if (next.has(tenantId)) {
+        next.delete(tenantId);
+        setDomainMap(d => { const n = { ...d }; delete n[tenantId]; return n; });
+      } else {
+        next.add(tenantId);
+      }
+      return next;
+    });
+  }
+
+  async function handleQuickCreate(e: React.FormEvent) {
     e.preventDefault();
-    if (!selectedTenant || !domain) return;
+    if (selectedTenants.size === 0) return;
+
+    // Validate all selected tenants have domains
+    const missing = Array.from(selectedTenants).filter(id => !domainMap[id]?.trim());
+    if (missing.length > 0) {
+      alert("Please enter a domain for all selected tenants");
+      return;
+    }
+
     setLoading(true);
+    setResult(null);
     try {
-      await api.createMailboxes(selectedTenant, {
-        domain, mailbox_count: count,
-        cf_email: cfEmail || undefined,
-        cf_api_key: cfApiKey || undefined,
-      });
+      const items = Array.from(selectedTenants).map(id => ({
+        tenant_id: id,
+        domain: domainMap[id].trim(),
+        mailbox_count: count,
+      }));
+      const res = await api.bulkCreateMailboxes(items, cfEmail || undefined, cfApiKey || undefined);
+      setResult(res);
       loadData();
-      setDomain(""); setCfEmail(""); setCfApiKey("");
+      setSelectedTenants(new Set());
+      setDomainMap({});
+    } catch (err: any) {
+      alert(err.message);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function handleCsvCreate(e: React.FormEvent) {
+    e.preventDefault();
+    if (!csvFile) return;
+    setLoading(true);
+    setResult(null);
+    try {
+      const res = await api.bulkCreateMailboxesCsv(csvFile, csvCfEmail || undefined, csvCfApiKey || undefined);
+      setResult(res);
+      loadData();
+      setCsvFile(null);
     } catch (err: any) {
       alert(err.message);
     } finally {
@@ -102,7 +155,6 @@ export default function MailboxesPage() {
     window.open(`/api/v1/mailboxes/${tenantId}/export`, "_blank");
   }
 
-  // Parse current step number from phase string like "Step 3/9: Add Domain"
   function parseCurrentStep(phase: string | null): number | null {
     if (!phase) return null;
     const m = phase.match(/^Step (\d+)\//);
@@ -121,73 +173,189 @@ export default function MailboxesPage() {
     <div>
       <h1 className="text-2xl font-bold mb-6">Mailbox Creation</h1>
 
-      {/* Create form */}
-      <form onSubmit={handleCreate} className="bg-white rounded-lg border p-6 mb-6">
-        <h2 className="font-semibold mb-4">Create Mailboxes</h2>
-        <div className="grid grid-cols-2 gap-4">
-          <div>
-            <label className="block text-sm font-medium mb-1">Tenant *</label>
-            <select
-              value={selectedTenant}
-              onChange={(e) => setSelectedTenant(e.target.value)}
-              className="w-full px-3 py-2 border rounded-lg text-sm"
-              required
-            >
-              <option value="">Select tenant...</option>
-              {tenants.map((t) => (
-                <option key={t.id} value={t.id}>
-                  {t.name} ({t.admin_email}) — {t.mailbox_count ?? 0} mailboxes
-                </option>
-              ))}
-            </select>
-          </div>
-          <div>
-            <label className="block text-sm font-medium mb-1">Domain *</label>
-            <input
-              value={domain}
-              onChange={(e) => setDomain(e.target.value)}
-              placeholder="example.com"
-              className="w-full px-3 py-2 border rounded-lg text-sm"
-              required
-            />
-          </div>
-          <div>
-            <label className="block text-sm font-medium mb-1">Mailbox Count</label>
-            <input
-              type="number"
-              value={count}
-              onChange={(e) => setCount(parseInt(e.target.value) || 50)}
-              className="w-full px-3 py-2 border rounded-lg text-sm"
-            />
-          </div>
-          <div>
-            <label className="block text-sm font-medium mb-1">Cloudflare Email</label>
-            <input
-              value={cfEmail}
-              onChange={(e) => setCfEmail(e.target.value)}
-              placeholder="Leave blank for default"
-              className="w-full px-3 py-2 border rounded-lg text-sm"
-            />
-          </div>
-          <div className="col-span-2">
-            <label className="block text-sm font-medium mb-1">Cloudflare API Key</label>
-            <input
-              type="password"
-              value={cfApiKey}
-              onChange={(e) => setCfApiKey(e.target.value)}
-              placeholder="Leave blank for default"
-              className="w-full px-3 py-2 border rounded-lg text-sm"
-            />
-          </div>
+      {/* Result Banner */}
+      {result && (
+        <div className="mb-4">
+          {result.created > 0 && (
+            <div className="bg-green-50 border border-green-200 rounded-lg p-3 mb-2 text-sm text-green-800">
+              {result.created} job(s) queued successfully
+            </div>
+          )}
+          {result.errors.length > 0 && (
+            <div className="bg-red-50 border border-red-200 rounded-lg p-3 text-sm text-red-800">
+              <p className="font-medium mb-1">Errors:</p>
+              <ul className="list-disc list-inside">
+                {result.errors.map((e, i) => (
+                  <li key={i}>{e.tenant_id}: {e.error}</li>
+                ))}
+              </ul>
+            </div>
+          )}
         </div>
-        <button
-          type="submit"
-          disabled={loading}
-          className="mt-4 bg-blue-600 text-white px-6 py-2 rounded-lg hover:bg-blue-700 disabled:opacity-50 text-sm flex items-center gap-2"
-        >
-          <Plus size={16} /> {loading ? "Starting..." : "Start Pipeline"}
-        </button>
-      </form>
+      )}
+
+      {/* Tabbed Form */}
+      <div className="bg-white rounded-lg border mb-6">
+        <div className="flex border-b">
+          <button
+            onClick={() => setActiveTab("quick")}
+            className={`px-6 py-3 text-sm font-medium border-b-2 -mb-px ${
+              activeTab === "quick" ? "border-blue-600 text-blue-600" : "border-transparent text-gray-500 hover:text-gray-700"
+            }`}
+          >
+            Quick Create
+          </button>
+          <button
+            onClick={() => setActiveTab("csv")}
+            className={`px-6 py-3 text-sm font-medium border-b-2 -mb-px ${
+              activeTab === "csv" ? "border-blue-600 text-blue-600" : "border-transparent text-gray-500 hover:text-gray-700"
+            }`}
+          >
+            CSV Import
+          </button>
+        </div>
+
+        <div className="p-6">
+          {activeTab === "quick" && (
+            <form onSubmit={handleQuickCreate}>
+              <div className="mb-4">
+                <label className="block text-sm font-medium mb-2">Select Tenants</label>
+                <div className="border rounded-lg max-h-48 overflow-y-auto">
+                  {tenants.length === 0 && (
+                    <p className="px-3 py-4 text-sm text-gray-400 text-center">No completed tenants available</p>
+                  )}
+                  {tenants.map(t => (
+                    <label
+                      key={t.id}
+                      className="flex items-center px-3 py-2 hover:bg-gray-50 cursor-pointer border-b last:border-b-0"
+                    >
+                      <input
+                        type="checkbox"
+                        checked={selectedTenants.has(t.id)}
+                        onChange={() => toggleTenant(t.id)}
+                        className="mr-3 rounded"
+                      />
+                      <span className="text-sm">
+                        {t.name} <span className="text-gray-400">({t.admin_email})</span>
+                        <span className="text-gray-400 ml-1">— {t.mailbox_count ?? 0} mailboxes</span>
+                      </span>
+                    </label>
+                  ))}
+                </div>
+              </div>
+
+              {/* Domain inputs for selected tenants */}
+              {selectedTenants.size > 0 && (
+                <div className="mb-4 space-y-2">
+                  <label className="block text-sm font-medium mb-1">Domains</label>
+                  {Array.from(selectedTenants).map(id => {
+                    const tenant = tenants.find(t => t.id === id);
+                    return (
+                      <div key={id} className="flex items-center gap-3">
+                        <span className="text-sm text-gray-600 w-48 truncate" title={tenant?.name}>
+                          {tenant?.name}
+                        </span>
+                        <span className="text-gray-400">—</span>
+                        <input
+                          value={domainMap[id] || ""}
+                          onChange={e => setDomainMap(prev => ({ ...prev, [id]: e.target.value }))}
+                          placeholder="example.com"
+                          className="flex-1 px-3 py-1.5 border rounded-lg text-sm"
+                          required
+                        />
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+
+              <div className="grid grid-cols-3 gap-4">
+                <div>
+                  <label className="block text-sm font-medium mb-1">Mailbox Count</label>
+                  <input
+                    type="number"
+                    value={count}
+                    onChange={e => setCount(parseInt(e.target.value) || 50)}
+                    className="w-full px-3 py-2 border rounded-lg text-sm"
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium mb-1">Cloudflare Email</label>
+                  <input
+                    value={cfEmail}
+                    onChange={e => setCfEmail(e.target.value)}
+                    placeholder="Leave blank for default"
+                    className="w-full px-3 py-2 border rounded-lg text-sm"
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium mb-1">Cloudflare API Key</label>
+                  <input
+                    type="password"
+                    value={cfApiKey}
+                    onChange={e => setCfApiKey(e.target.value)}
+                    placeholder="Leave blank for default"
+                    className="w-full px-3 py-2 border rounded-lg text-sm"
+                  />
+                </div>
+              </div>
+
+              <button
+                type="submit"
+                disabled={loading || selectedTenants.size === 0}
+                className="mt-4 bg-blue-600 text-white px-6 py-2 rounded-lg hover:bg-blue-700 disabled:opacity-50 text-sm flex items-center gap-2"
+              >
+                <Plus size={16} /> {loading ? "Starting..." : `Start ${selectedTenants.size} Pipeline(s)`}
+              </button>
+            </form>
+          )}
+
+          {activeTab === "csv" && (
+            <form onSubmit={handleCsvCreate}>
+              <div className="mb-4">
+                <label className="block text-sm font-medium mb-1">CSV File</label>
+                <input
+                  type="file"
+                  accept=".csv"
+                  onChange={e => setCsvFile(e.target.files?.[0] || null)}
+                  className="w-full px-3 py-2 border rounded-lg text-sm"
+                />
+                <p className="text-xs text-gray-400 mt-1">
+                  Expected columns: <code className="bg-gray-100 px-1 rounded">tenant_email, domain, count</code> (count is optional, defaults to 50)
+                </p>
+              </div>
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-sm font-medium mb-1">Cloudflare Email</label>
+                  <input
+                    value={csvCfEmail}
+                    onChange={e => setCsvCfEmail(e.target.value)}
+                    placeholder="Leave blank for default"
+                    className="w-full px-3 py-2 border rounded-lg text-sm"
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium mb-1">Cloudflare API Key</label>
+                  <input
+                    type="password"
+                    value={csvCfApiKey}
+                    onChange={e => setCsvCfApiKey(e.target.value)}
+                    placeholder="Leave blank for default"
+                    className="w-full px-3 py-2 border rounded-lg text-sm"
+                  />
+                </div>
+              </div>
+              <button
+                type="submit"
+                disabled={loading || !csvFile}
+                className="mt-4 bg-blue-600 text-white px-6 py-2 rounded-lg hover:bg-blue-700 disabled:opacity-50 text-sm flex items-center gap-2"
+              >
+                <Upload size={16} /> {loading ? "Uploading..." : "Upload & Start"}
+              </button>
+            </form>
+          )}
+        </div>
+      </div>
 
       {/* Jobs list */}
       <div className="bg-white rounded-lg border overflow-hidden">
