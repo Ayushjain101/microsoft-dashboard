@@ -31,6 +31,7 @@ def setup_single_tenant(
     email: str,
     password: str,
     new_password: str = None,
+    mfa_secret: str = None,
     skip_login: bool = False,
     app_name: str = None,
     progress_callback=None,
@@ -61,7 +62,7 @@ def setup_single_tenant(
         step = "login"
         progress(1, "Browser Login")
         if not skip_login:
-            login_result = do_az_login(az_path, email, password, new_password)
+            login_result = do_az_login(az_path, email, password, new_password, mfa_secret=mfa_secret)
             if login_result["password_changed"]:
                 password = login_result["working_password"]
                 result["admin_password"] = password

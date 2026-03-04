@@ -54,6 +54,7 @@ def run_tenant_setup(self, tenant_id: str):
         email = tenant.admin_email
         password = decrypt(tenant.admin_password) if tenant.admin_password else ""
         new_password = decrypt(tenant.new_password) if tenant.new_password else None
+        mfa_secret = decrypt(tenant.mfa_secret) if tenant.mfa_secret else None
 
     total = 13
 
@@ -71,6 +72,7 @@ def run_tenant_setup(self, tenant_id: str):
             email=email,
             password=password,
             new_password=new_password,
+            mfa_secret=mfa_secret,
             progress_callback=on_progress,
         )
 

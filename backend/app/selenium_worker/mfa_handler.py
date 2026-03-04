@@ -66,7 +66,7 @@ def get_exchange_token(az_path: str) -> str:
 
 # ── Device Code Login ──────────────────────────────────────────────────────────
 
-def do_az_login(az_path: str, email: str, password: str, new_password: str = None) -> dict:
+def do_az_login(az_path: str, email: str, password: str, new_password: str = None, mfa_secret: str = None) -> dict:
     logger.info("Starting az login with device code ...")
     full_cmd = f'"{az_path}" login --use-device-code --allow-no-subscriptions'
     proc = subprocess.Popen(
@@ -101,7 +101,7 @@ def do_az_login(az_path: str, email: str, password: str, new_password: str = Non
         raise RuntimeError(f"No device code from az login. Output: {''.join(output_lines)[:300]}")
 
     logger.info(f"Got device code: {device_code}")
-    login_result = _browser_login(email, password, new_password, device_code)
+    login_result = _browser_login(email, password, new_password, device_code, mfa_secret=mfa_secret)
 
     logger.info("Waiting for az login to complete ...")
     try:
@@ -117,7 +117,7 @@ def do_az_login(az_path: str, email: str, password: str, new_password: str = Non
     return login_result
 
 
-def _browser_login(email: str, password: str, new_password: str, device_code: str) -> dict:
+def _browser_login(email: str, password: str, new_password: str, device_code: str, mfa_secret: str = None) -> dict:
     logger.info("Launching Chrome for device code login ...")
     result = {"password_changed": False, "working_password": password}
 
@@ -250,9 +250,16 @@ def _browser_login(email: str, password: str, new_password: str, device_code: st
         if (mfa_detected or
                 any(kw in page_text for kw in mfa_keywords) or
                 any(kw in current_url for kw in mfa_url_keywords)):
-            mfa_secret = _handle_mfa(b)
             if mfa_secret:
+                # We have a stored MFA secret — use it to answer the OTP prompt
+                logger.info("MFA detected with stored secret — answering OTP prompt directly")
+                _handle_mfa_with_known_secret(b, mfa_secret)
                 result["mfa_secret"] = mfa_secret
+            else:
+                # No stored secret — go through enrollment flow
+                new_mfa_secret = _handle_mfa(b)
+                if new_mfa_secret:
+                    result["mfa_secret"] = new_mfa_secret
 
         # Device code app confirmation
         for confirm_round in range(8):
@@ -453,6 +460,78 @@ def _click_submit(driver):
     except Exception:
         pass
     return False
+
+
+def _handle_mfa_with_known_secret(b, mfa_secret: str):
+    """Handle MFA OTP prompt using a previously stored TOTP secret."""
+    driver = b.driver
+    logger.info("Handling MFA with known secret — looking for OTP input")
+
+    # Wait for OTP input field to appear (may need to click through pages first)
+    otp_field = None
+    for attempt in range(15):
+        otp_field = _mfa_find_otp_input(driver)
+        if otp_field:
+            break
+        # Try clicking through intermediate pages (e.g. "Verify your identity")
+        for btn_id in ["idSubmit_ProofUp_Redirect", "idSIButton9"]:
+            if _mfa_try_click(driver, By.ID, btn_id, timeout=2):
+                time.sleep(3)
+                break
+        # Check for "I can't use my Microsoft Authenticator app right now" or similar
+        # to switch to TOTP code entry
+        try:
+            for link in driver.find_elements(By.CSS_SELECTOR, "a, button, [role='button']"):
+                link_text = (link.text or "").lower()
+                if link.is_displayed() and any(kw in link_text for kw in [
+                    "different method", "another way", "can't use",
+                    "use a verification code", "authenticator app",
+                    "enter code", "use code",
+                ]):
+                    driver.execute_script("arguments[0].click();", link)
+                    logger.info(f"Clicked '{link.text}' to switch to code entry")
+                    time.sleep(3)
+                    break
+        except Exception:
+            pass
+        time.sleep(2)
+
+    if not otp_field:
+        otp_field = _mfa_find_otp_input(driver)
+
+    if otp_field:
+        otp_code = _mfa_generate_otp(mfa_secret)
+        if not otp_code:
+            logger.error("Failed to generate OTP from stored secret")
+            return
+        otp_field.click()
+        time.sleep(0.2)
+        otp_field.clear()
+        time.sleep(0.1)
+        otp_field.send_keys(otp_code)
+        time.sleep(0.5)
+
+        if not _mfa_try_click(driver, By.ID, "idSubmit_SAOTCC_Continue", timeout=3):
+            _mfa_click_next(driver)
+        time.sleep(4)
+
+        # Click through any remaining confirmation pages
+        for _ in range(5):
+            try:
+                page_text = driver.find_element(By.TAG_NAME, "body").text.lower()
+                if "signed in" in page_text or "successfully" in page_text:
+                    break
+            except Exception:
+                break
+            for btn_id in ["idSIButton9", "idBtn_Accept"]:
+                if _mfa_try_click(driver, By.ID, btn_id, timeout=2):
+                    time.sleep(3)
+                    break
+            else:
+                time.sleep(2)
+        logger.info("MFA verification with known secret completed")
+    else:
+        logger.error("Could not find OTP input field for known-secret MFA")
 
 
 def _handle_mfa(b):
