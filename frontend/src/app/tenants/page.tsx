@@ -45,6 +45,14 @@ export default function TenantsPage() {
   const onWsMessage = useCallback((event: WSEvent) => {
     if (event.type === "tenant_setup_progress" && event.tenant_id) {
       setProgress((prev) => ({ ...prev, [event.tenant_id!]: event }));
+      // Update tenant inline from WS data so main row reflects progress
+      setTenants((prev) =>
+        prev.map((t) =>
+          t.id === event.tenant_id
+            ? { ...t, status: event.status || t.status, current_step: event.step ? `Step ${event.step}/${event.total}: ${event.message}` : t.current_step }
+            : t
+        )
+      );
       // Refresh list if status changed
       if (event.status === "complete" || event.status === "failed") {
         if (refreshTimerRef.current) clearTimeout(refreshTimerRef.current);
