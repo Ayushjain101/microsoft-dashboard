@@ -277,6 +277,30 @@ async def get_tenant(tenant_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
     return out
 
 
+class TenantUpdate(BaseModel):
+    admin_password: str | None = None
+    new_password: str | None = None
+
+
+@router.patch("/{tenant_id}")
+async def update_tenant(tenant_id: uuid.UUID, body: TenantUpdate, db: AsyncSession = Depends(get_db)):
+    tenant = await db.get(Tenant, tenant_id)
+    if not tenant:
+        raise HTTPException(status_code=404, detail="Tenant not found")
+    if tenant.status in ("running", "queued"):
+        raise HTTPException(status_code=409, detail="Cannot edit tenant while setup is running")
+
+    if body.admin_password is not None:
+        tenant.admin_password = encrypt(body.admin_password)
+    if body.new_password is not None:
+        tenant.new_password = encrypt(body.new_password) if body.new_password else None
+
+    tenant.updated_at = datetime.now(timezone.utc)
+    await db.commit()
+    await db.refresh(tenant)
+    return _tenant_to_out(tenant)
+
+
 @router.delete("/{tenant_id}")
 async def delete_tenant(tenant_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
     tenant = await db.get(Tenant, tenant_id)

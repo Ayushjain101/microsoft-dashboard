@@ -41,6 +41,8 @@ export const api = {
     return r.json();
   },
   getTenant: (id: string) => request<any>(`/api/v1/tenants/${id}`),
+  updateTenant: (id: string, data: { admin_password?: string; new_password?: string }) =>
+    request(`/api/v1/tenants/${id}`, { method: "PATCH", body: JSON.stringify(data) }),
   deleteTenant: (id: string) => request(`/api/v1/tenants/${id}`, { method: "DELETE" }),
   setupTenant: (id: string) => request(`/api/v1/tenants/${id}/setup`, { method: "POST" }),
   retryTenant: (id: string) => request(`/api/v1/tenants/${id}/retry`, { method: "POST" }),

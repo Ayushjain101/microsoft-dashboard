@@ -5,7 +5,7 @@ import { api } from "@/lib/api";
 import { Tenant, WSEvent } from "@/lib/types";
 import { useWebSocket } from "@/hooks/useWebSocket";
 import SetupProgress from "@/components/tenants/SetupProgress";
-import { Plus, Play, RotateCcw, Trash2, Download, ChevronDown } from "lucide-react";
+import { Plus, Play, RotateCcw, Trash2, Download, ChevronDown, Pencil, X } from "lucide-react";
 
 const STATUS_COLORS: Record<string, string> = {
   pending: "bg-gray-100 text-gray-700",
@@ -23,6 +23,9 @@ export default function TenantsPage() {
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [progress, setProgress] = useState<Record<string, WSEvent>>({});
   const refreshTimerRef = useRef<ReturnType<typeof setTimeout>>(undefined);
+  const [editingTenant, setEditingTenant] = useState<Tenant | null>(null);
+  const [editPassword, setEditPassword] = useState("");
+  const [editSaving, setEditSaving] = useState(false);
 
   const loadTenants = useCallback(async () => {
     try {
@@ -84,8 +87,64 @@ export default function TenantsPage() {
     } catch (e: any) { alert(e.message); }
   }
 
+  async function handleSavePassword() {
+    if (!editingTenant || !editPassword.trim()) return;
+    setEditSaving(true);
+    try {
+      await api.updateTenant(editingTenant.id, { admin_password: editPassword.trim() });
+      setEditingTenant(null);
+      setEditPassword("");
+      loadTenants();
+    } catch (e: any) {
+      alert(e.message);
+    } finally {
+      setEditSaving(false);
+    }
+  }
+
   return (
     <div>
+      {/* Edit Password Modal */}
+      {editingTenant && (
+        <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50">
+          <div className="bg-white rounded-lg shadow-lg w-full max-w-md p-6">
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="font-semibold">Edit Password</h3>
+              <button onClick={() => { setEditingTenant(null); setEditPassword(""); }} className="p-1 hover:bg-gray-100 rounded">
+                <X size={18} />
+              </button>
+            </div>
+            <p className="text-sm text-gray-500 mb-3">{editingTenant.name} ({editingTenant.admin_email})</p>
+            <div className="mb-4">
+              <label className="block text-sm font-medium mb-1">New Password</label>
+              <input
+                type="text"
+                value={editPassword}
+                onChange={(e) => setEditPassword(e.target.value)}
+                placeholder="Enter new password"
+                className="w-full px-3 py-2 border rounded-lg text-sm"
+                autoFocus
+              />
+            </div>
+            <div className="flex justify-end gap-2">
+              <button
+                onClick={() => { setEditingTenant(null); setEditPassword(""); }}
+                className="px-4 py-2 text-sm text-gray-600 hover:bg-gray-100 rounded-lg"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleSavePassword}
+                disabled={editSaving || !editPassword.trim()}
+                className="px-4 py-2 text-sm bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50"
+              >
+                {editSaving ? "Saving..." : "Save"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       <div className="flex items-center justify-between mb-6">
         <h1 className="text-2xl font-bold">Tenant Setup</h1>
         <Link
@@ -137,6 +196,11 @@ export default function TenantsPage() {
                   <td className="px-4 py-3 text-gray-500 text-xs">{t.current_step || "—"}</td>
                   <td className="px-4 py-3 text-right">
                     <div className="flex items-center justify-end gap-1">
+                      {(t.status === "pending" || t.status === "failed") && (
+                        <button onClick={() => { setEditingTenant(t); setEditPassword(""); }} className="p-1 hover:bg-gray-100 rounded" title="Edit Password">
+                          <Pencil size={16} className="text-gray-500" />
+                        </button>
+                      )}
                       {t.status === "pending" && (
                         <button onClick={() => handleSetup(t.id)} className="p-1 hover:bg-blue-50 rounded" title="Start Setup">
                           <Play size={16} className="text-blue-600" />
