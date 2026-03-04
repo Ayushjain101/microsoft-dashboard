@@ -509,6 +509,26 @@ def run_mailbox_pipeline(self, job_id: str):
             os.unlink(pfx_path)
 
 
+def _update_dkim_step_result(job_id: str):
+    """Update step 5 (Setup DKIM) from warning → success when DKIM is enabled later."""
+    with Session(sync_engine) as db:
+        job = db.get(MailboxJob, job_id)
+        if not job or not job.step_results:
+            return
+        step5 = job.step_results.get("5")
+        if step5 and step5.get("status") != "success":
+            results = dict(job.step_results)
+            results["5"] = {"status": "success", "message": "Setup DKIM"}
+            job.step_results = results
+            flag_modified(job, "step_results")
+            db.commit()
+
+    publish_event_sync("mailbox_step_result", {
+        "job_id": job_id, "step": 5, "step_status": "success",
+        "message": "Setup DKIM",
+    })
+
+
 @celery_app.task(name="app.tasks.mailbox_pipeline.enable_dkim_task", bind=True, queue="tenant_setup",
                  acks_late=True, reject_on_worker_lost=True)
 def enable_dkim_task(self, job_id: str):
@@ -547,6 +567,9 @@ def enable_dkim_task(self, job_id: str):
             if dom:
                 dom.dkim_enabled = True
                 db.commit()
+
+        # Update step 5 in step_results from warning → success
+        _update_dkim_step_result(job_id)
 
         publish_event_sync("dkim_enabled", {
             "job_id": job_id, "domain": domain, "success": True,
@@ -600,10 +623,22 @@ def retry_pending_dkim():
 
                 dom.dkim_enabled = True
                 db.commit()
+
+                # Find the job for this domain and update step_results
+                job = db.execute(
+                    select(MailboxJob).where(
+                        MailboxJob.tenant_id == dom.tenant_id,
+                        MailboxJob.domain == domain_name,
+                    )
+                ).scalar_one_or_none()
+                if job:
+                    _update_dkim_step_result(str(job.id))
+
                 results.append({"domain": domain_name, "status": "success"})
                 logger.info(f"DKIM enabled for {domain_name}")
 
                 publish_event_sync("dkim_enabled", {
+                    "job_id": str(job.id) if job else None,
                     "domain": domain_name, "success": True,
                 })
 
