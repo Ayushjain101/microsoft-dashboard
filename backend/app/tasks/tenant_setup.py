@@ -1,4 +1,4 @@
-"""Celery task: 12-step Selenium tenant setup."""
+"""Celery task: 13-step Selenium tenant setup."""
 
 import traceback
 from datetime import datetime, timezone
@@ -12,7 +12,7 @@ from app.services.encryption import encrypt, encrypt_bytes
 from app.tasks.celery_app import celery_app
 from app.websocket import publish_event_sync
 
-sync_engine = create_engine(settings.database_url_sync)
+sync_engine = create_engine(settings.database_url_sync, pool_pre_ping=True, pool_recycle=3600)
 
 
 def _publish_progress(tenant_id: str, step: int, total: int, message: str, status: str = "running"):
@@ -56,7 +56,7 @@ def run_tenant_setup(self, tenant_id: str):
         password = decrypt(tenant.admin_password) if tenant.admin_password else ""
         new_password = decrypt(tenant.new_password) if tenant.new_password else None
 
-    total = 12
+    total = 13
 
     try:
         _publish_progress(tenant_id, 0, total, "Starting setup", "running")

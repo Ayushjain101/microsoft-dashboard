@@ -1,4 +1,4 @@
-"""Adapted setup_tenant.py — 12-step Selenium setup with progress callback.
+"""Adapted setup_tenant.py — 13-step Selenium setup with progress callback.
 
 Removed: Google Sheets calls, file I/O
 Added: progress_callback(step, message) for WebSocket relay, returns all data
@@ -132,13 +132,39 @@ def setup_single_tenant(
         step = "save"
         progress(10, "Save Credentials")
 
-        # Step 11: (Previously Google Sheet — now no-op)
+        # Step 11: Retry security setup with app credentials
+        # The az delegated token (Step 2) often lacks Policy.ReadWrite.ConditionalAccess,
+        # but the app now has it after admin consent (Step 8). Retry with client credentials.
         step = "post_save"
         progress(11, "Finalize")
+        try:
+            logger.info("Retrying security setup with app client credentials...")
+            time.sleep(10)  # Wait for permissions to propagate
+            app_token = _get_app_token(tenant_id, client_id, client_secret)
+            if app_token:
+                from app.selenium_worker.security_settings import (
+                    disable_security_defaults, disable_mfa_registration_campaign,
+                    disable_system_preferred_mfa,
+                )
+                disable_security_defaults(app_token)
+                disable_mfa_registration_campaign(app_token)
+                disable_system_preferred_mfa(app_token)
+        except Exception as e:
+            logger.warning(f"Security retry with app credentials failed: {e}")
 
-        # Step 12: Delete MFA Authenticator
+        # Step 12: Grant Instantly (third-party) Admin Consent
+        step = "instantly_consent"
+        progress(12, "Grant Instantly Admin Consent")
+        try:
+            _app_token = app_token if app_token else _get_app_token(tenant_id, client_id, client_secret)
+            if _app_token:
+                _grant_instantly_consent(_app_token)
+        except Exception as e:
+            logger.warning(f"Instantly consent failed (non-fatal): {e}")
+
+        # Step 13: Delete MFA Authenticator
         step = "delete_mfa"
-        progress(12, "Delete MFA Authenticator")
+        progress(13, "Delete MFA Authenticator")
         logger.info("Waiting 30s for app permissions to propagate before MFA deletion...")
         time.sleep(30)
         try:
@@ -158,20 +184,25 @@ def setup_single_tenant(
     return result
 
 
+def _get_app_token(tenant_id, client_id, client_secret):
+    """Get a client credentials token for the app registration."""
+    r = requests.post(
+        f"https://login.microsoftonline.com/{tenant_id}/oauth2/v2.0/token",
+        data={
+            "client_id": client_id, "client_secret": client_secret,
+            "scope": "https://graph.microsoft.com/.default",
+            "grant_type": "client_credentials",
+        }, timeout=30,
+    )
+    return r.json().get("access_token")
+
+
 def _delete_mfa(tenant_id, client_id, client_secret, admin_email, graph_token=None):
     """Delete all MFA authenticator methods for the admin user via Graph API."""
     graph = "https://graph.microsoft.com/v1.0"
 
     def _get_client_token():
-        r = requests.post(
-            f"https://login.microsoftonline.com/{tenant_id}/oauth2/v2.0/token",
-            data={
-                "client_id": client_id, "client_secret": client_secret,
-                "scope": "https://graph.microsoft.com/.default",
-                "grant_type": "client_credentials",
-            }, timeout=30,
-        )
-        return r.json().get("access_token")
+        return _get_app_token(tenant_id, client_id, client_secret)
 
     def _try_delete(token):
         headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
@@ -226,3 +257,83 @@ def _delete_mfa(tenant_id, client_id, client_secret, admin_email, graph_token=No
             return
 
     logger.warning("MFA deletion failed — permissions did not propagate in time")
+
+
+# ── Instantly (third-party) Admin Consent ─────────────────────────────────
+
+INSTANTLY_APP_ID = "65ad96b6-fbeb-40b5-b404-2a415d074c97"
+INSTANTLY_SCOPES = "openid email profile offline_access IMAP.AccessAsUser.All SMTP.Send Mail.Send"
+MS_GRAPH_APP_ID = "00000003-0000-0000-c000-000000000000"
+GRAPH_URL = "https://graph.microsoft.com/v1.0"
+
+
+def _grant_instantly_consent(token: str):
+    """Pre-grant admin consent for Instantly (Foo Monk LLC) across the entire tenant.
+
+    Creates the Instantly service principal if needed, then grants tenant-wide
+    oauth2PermissionGrant for IMAP, SMTP, Mail.Send scopes. This eliminates
+    the 'Need admin approval' prompt when connecting mailboxes in Instantly.
+    """
+    headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+
+    def _graph_get(path):
+        r = requests.get(f"{GRAPH_URL}{path}", headers=headers, timeout=30)
+        if r.status_code >= 400:
+            raise RuntimeError(f"GET {path} -> {r.status_code}: {r.text}")
+        return r.json()
+
+    def _graph_post(path, data):
+        r = requests.post(f"{GRAPH_URL}{path}", headers=headers, json=data, timeout=30)
+        if r.status_code >= 400:
+            raise RuntimeError(f"POST {path} -> {r.status_code}: {r.text}")
+        return r.json()
+
+    # 1. Find or create Instantly's service principal
+    try:
+        sps = _graph_get(f"/servicePrincipals?$filter=appId eq '{INSTANTLY_APP_ID}'").get("value", [])
+        if sps:
+            instantly_sp_id = sps[0]["id"]
+        else:
+            resp = _graph_post("/servicePrincipals", {"appId": INSTANTLY_APP_ID})
+            instantly_sp_id = resp["id"]
+            time.sleep(10)  # Wait for propagation
+    except RuntimeError as e:
+        if "already exist" in str(e).lower() or "409" in str(e):
+            sps = _graph_get(f"/servicePrincipals?$filter=appId eq '{INSTANTLY_APP_ID}'").get("value", [])
+            instantly_sp_id = sps[0]["id"]
+        else:
+            raise
+
+    # 2. Find Microsoft Graph's service principal
+    graph_sps = _graph_get(f"/servicePrincipals?$filter=appId eq '{MS_GRAPH_APP_ID}'").get("value", [])
+    if not graph_sps:
+        logger.warning("Instantly consent: Microsoft Graph SP not found")
+        return
+    graph_sp_id = graph_sps[0]["id"]
+
+    # 3. Check if consent already exists
+    try:
+        grants = _graph_get(f"/oauth2PermissionGrants?$filter=clientId eq '{instantly_sp_id}'").get("value", [])
+        for grant in grants:
+            if grant.get("resourceId") == graph_sp_id and grant.get("consentType") == "AllPrincipals":
+                logger.info("Instantly admin consent already granted")
+                return
+    except RuntimeError:
+        pass
+
+    # 4. Create tenant-wide consent grant
+    for attempt in range(1, 4):
+        try:
+            _graph_post("/oauth2PermissionGrants", {
+                "clientId": instantly_sp_id,
+                "consentType": "AllPrincipals",
+                "resourceId": graph_sp_id,
+                "scope": INSTANTLY_SCOPES,
+            })
+            logger.info("Instantly admin consent granted successfully")
+            return
+        except RuntimeError as e:
+            if attempt < 3 and "ObjectNotFound" in str(e):
+                time.sleep(10)
+            else:
+                raise
