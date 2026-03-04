@@ -6,6 +6,7 @@ APP_DIR="$(cd "$(dirname "$0")" && pwd)"
 BACKEND_DIR="$APP_DIR/backend"
 FRONTEND_DIR="$APP_DIR/frontend"
 VENV_DIR="$BACKEND_DIR/.venv"
+SELENIUM_SERVER="${SELENIUM_SERVER:-}"
 
 echo "==> Deploying from $APP_DIR"
 
@@ -38,20 +39,58 @@ setup_postgres() {
         sudo -u postgres createdb -O tenantadmin tenants
     # Ensure password is current
     sudo -u postgres psql -c "ALTER USER tenantadmin WITH PASSWORD '${DB_PASSWORD:-dbpass}';" 2>/dev/null || true
+
+    # Allow remote connections from selenium server
+    if [ -n "$SELENIUM_SERVER" ]; then
+        PG_CONF=$(find /etc/postgresql -name postgresql.conf 2>/dev/null | head -1)
+        PG_HBA=$(find /etc/postgresql -name pg_hba.conf 2>/dev/null | head -1)
+
+        # Listen on all interfaces
+        sed -i "s/^#listen_addresses = 'localhost'/listen_addresses = '*'/" "$PG_CONF"
+        sed -i "s/^listen_addresses = 'localhost'/listen_addresses = '*'/" "$PG_CONF"
+
+        # Add pg_hba entry for selenium server
+        if ! grep -q "$SELENIUM_SERVER" "$PG_HBA"; then
+            echo "host    all    tenantadmin    $SELENIUM_SERVER/32    scram-sha-256" >> "$PG_HBA"
+        fi
+    fi
 }
 
 # ── 3. Redis setup ──────────────────────────────────────────────────────
 setup_redis() {
     echo "==> Setting up Redis..."
-    # Set password if not already set
-    if ! grep -q "^requirepass" /etc/redis/redis.conf 2>/dev/null; then
-        echo "requirepass ${REDIS_PASSWORD:-redispass}" >> /etc/redis/redis.conf
+    local REDIS_CONF="/etc/redis/redis.conf"
+
+    # Set password
+    if ! grep -q "^requirepass" "$REDIS_CONF" 2>/dev/null; then
+        echo "requirepass ${REDIS_PASSWORD:-redispass}" >> "$REDIS_CONF"
     fi
+
+    # Bind to all interfaces if selenium server is remote
+    if [ -n "$SELENIUM_SERVER" ]; then
+        sed -i 's/^bind 127.0.0.1.*/bind 0.0.0.0/' "$REDIS_CONF"
+    fi
+
     systemctl enable --now redis-server
     systemctl restart redis-server
 }
 
-# ── 4. Backend ──────────────────────────────────────────────────────────
+# ── 4. Firewall setup ───────────────────────────────────────────────────
+setup_firewall() {
+    echo "==> Configuring firewall..."
+    ufw allow 22/tcp > /dev/null 2>&1 || true
+    ufw allow 80/tcp > /dev/null 2>&1 || true
+    ufw allow 443/tcp > /dev/null 2>&1 || true
+
+    if [ -n "$SELENIUM_SERVER" ]; then
+        ufw allow from "$SELENIUM_SERVER" to any port 5432 proto tcp comment 'Selenium-Postgres' > /dev/null 2>&1 || true
+        ufw allow from "$SELENIUM_SERVER" to any port 6379 proto tcp comment 'Selenium-Redis' > /dev/null 2>&1 || true
+    fi
+
+    ufw --force enable > /dev/null 2>&1 || true
+}
+
+# ── 5. Backend ──────────────────────────────────────────────────────────
 deploy_backend() {
     echo "==> Deploying backend..."
     cd "$BACKEND_DIR"
@@ -67,19 +106,22 @@ deploy_backend() {
     "$VENV_DIR/bin/alembic" upgrade head 2>/dev/null || echo "  (no migrations or already up to date)"
 }
 
-# ── 5. Frontend ─────────────────────────────────────────────────────────
+# ── 6. Frontend ─────────────────────────────────────────────────────────
 deploy_frontend() {
     echo "==> Deploying frontend..."
     cd "$FRONTEND_DIR"
     npm install --silent
     npm run build
+
+    # Next.js standalone requires static assets copied in
+    cp -r .next/static .next/standalone/.next/static
+    cp -r public .next/standalone/public 2>/dev/null || true
 }
 
-# ── 6. Systemd services ────────────────────────────────────────────────
+# ── 7. Systemd services ────────────────────────────────────────────────
 install_services() {
     echo "==> Installing systemd services..."
 
-    # Load .env for the service files
     ENV_FILE="$APP_DIR/.env"
 
     # --- API ---
@@ -91,7 +133,7 @@ Requires=postgresql.service redis-server.service
 
 [Service]
 Type=simple
-User=root
+User=ubuntu
 WorkingDirectory=$BACKEND_DIR
 EnvironmentFile=$ENV_FILE
 ExecStart=$VENV_DIR/bin/uvicorn app.main:app --host 127.0.0.1 --port 8000
@@ -111,7 +153,7 @@ Requires=redis-server.service
 
 [Service]
 Type=simple
-User=root
+User=ubuntu
 WorkingDirectory=$BACKEND_DIR
 EnvironmentFile=$ENV_FILE
 ExecStart=$VENV_DIR/bin/celery -A app.tasks.celery_app worker -Q default,mailbox,monitor -c 4 --loglevel=info
@@ -131,10 +173,32 @@ Requires=redis-server.service
 
 [Service]
 Type=simple
-User=root
+User=ubuntu
 WorkingDirectory=$BACKEND_DIR
 EnvironmentFile=$ENV_FILE
 ExecStart=$VENV_DIR/bin/celery -A app.tasks.celery_app beat --loglevel=info
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+    # --- Selenium Worker (tenant_setup queue) ---
+    cat > /etc/systemd/system/tenant-selenium.service <<EOF
+[Unit]
+Description=Tenant Selenium Worker (tenant_setup queue)
+After=network.target postgresql.service redis-server.service
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=$BACKEND_DIR
+EnvironmentFile=$ENV_FILE
+Environment=DISPLAY=:99
+Environment=PYTHONUNBUFFERED=1
+ExecStartPre=/usr/bin/bash -c 'Xvfb :99 -screen 0 1920x1080x24 -nolisten tcp &'
+ExecStart=$VENV_DIR/bin/celery -A app.tasks.celery_app worker -Q tenant_setup -c 1 --loglevel=info -n selenium@%H
 Restart=always
 RestartSec=5
 
@@ -150,7 +214,7 @@ After=network.target
 
 [Service]
 Type=simple
-User=root
+User=ubuntu
 WorkingDirectory=$FRONTEND_DIR
 Environment=NODE_ENV=production
 Environment=PORT=3000
@@ -169,11 +233,11 @@ EOF
     systemctl daemon-reload
 }
 
-# ── 7. Start everything ────────────────────────────────────────────────
+# ── 8. Start everything ────────────────────────────────────────────────
 start_services() {
     echo "==> Starting services..."
-    systemctl enable --now tenant-api tenant-celery tenant-beat tenant-frontend
-    systemctl restart tenant-api tenant-celery tenant-beat tenant-frontend
+    systemctl enable --now tenant-api tenant-celery tenant-beat tenant-selenium tenant-frontend
+    systemctl restart tenant-api tenant-celery tenant-beat tenant-selenium tenant-frontend
     systemctl enable --now caddy
     systemctl reload caddy 2>/dev/null || systemctl restart caddy
     echo "==> All services started!"
@@ -194,6 +258,7 @@ if [ "${1:-}" = "--init" ]; then
     install_system_deps
     setup_postgres
     setup_redis
+    setup_firewall
 fi
 
 deploy_backend
@@ -208,4 +273,5 @@ echo "    Frontend: http://localhost:3000"
 echo "    Site:     https://decimastellarbolt.info"
 echo ""
 echo "    Logs: journalctl -u tenant-api -f"
-echo "          journalctl -u tenant-frontend -f"
+echo "          journalctl -u tenant-celery -f"
+echo "          journalctl -u tenant-selenium -f"
