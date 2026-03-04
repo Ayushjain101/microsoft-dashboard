@@ -25,6 +25,7 @@ celery_app.conf.update(
         "app.tasks.monitor.*": {"queue": "monitor"},
     },
     task_default_queue="default",
+    worker_prefetch_multiplier=1,
     beat_schedule={
         "monitor-smtp-every-30m": {
             "task": "app.tasks.monitor.run_smtp_checks",
