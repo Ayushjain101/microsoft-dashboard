@@ -34,8 +34,7 @@ def _publish_progress(tenant_id: str, step: int, total: int, message: str, statu
             db.commit()
 
 
-@celery_app.task(name="app.tasks.tenant_setup.run_tenant_setup", bind=True, queue="tenant_setup",
-                 acks_late=True, reject_on_worker_lost=True)
+@celery_app.task(name="app.tasks.tenant_setup.run_tenant_setup", bind=True, queue="tenant_setup")
 def run_tenant_setup(self, tenant_id: str):
     """Run the 12-step Selenium setup for a tenant.
 
