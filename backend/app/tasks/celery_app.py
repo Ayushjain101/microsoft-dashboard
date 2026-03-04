@@ -14,8 +14,13 @@ celery_app.conf.update(
     result_serializer="json",
     accept_content=["json"],
     timezone="UTC",
+    broker_connection_retry_on_startup=True,
+    broker_connection_retry=True,
+    worker_cancel_long_running_tasks_on_connection_loss=True,
     task_routes={
         "app.tasks.tenant_setup.*": {"queue": "tenant_setup"},
+        "app.tasks.mailbox_pipeline.enable_dkim_task": {"queue": "tenant_setup"},
+        "app.tasks.mailbox_pipeline.retry_pending_dkim": {"queue": "tenant_setup"},
         "app.tasks.mailbox_pipeline.*": {"queue": "mailbox"},
         "app.tasks.monitor.*": {"queue": "monitor"},
     },
@@ -32,6 +37,10 @@ celery_app.conf.update(
         "reap-stale-tasks-every-5m": {
             "task": "app.tasks.monitor.reap_stale_tasks",
             "schedule": crontab(minute="*/5"),
+        },
+        "retry-pending-dkim-every-2h": {
+            "task": "app.tasks.mailbox_pipeline.retry_pending_dkim",
+            "schedule": crontab(minute=0, hour="*/2"),
         },
     },
 )

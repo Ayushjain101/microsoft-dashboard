@@ -531,10 +531,11 @@ def enable_dkim_task(self, job_id: str):
             raise RuntimeError("PowerShell (pwsh) not available")
 
         ps = PowerShellRunner(tenant_data)
+        err_lower_keywords = ["not exist", "couldn't be found", "couldn't find", "not found", "could not be found"]
         try:
             ps.run([f"Set-DkimSigningConfig -Identity '{domain}' -Enabled $true"])
         except RuntimeError as e:
-            if "does not exist" in str(e).lower() or "couldn't find" in str(e).lower():
+            if any(kw in str(e).lower() for kw in err_lower_keywords):
                 ps.run([f"New-DkimSigningConfig -DomainName '{domain}' -Enabled $true"])
             else:
                 raise
@@ -560,3 +561,57 @@ def enable_dkim_task(self, job_id: str):
     finally:
         if pfx_path and os.path.exists(pfx_path):
             os.unlink(pfx_path)
+
+
+@celery_app.task(name="app.tasks.mailbox_pipeline.retry_pending_dkim", queue="tenant_setup")
+def retry_pending_dkim():
+    """Periodic task: retry DKIM enablement for all domains where dkim_enabled=False."""
+    with Session(sync_engine) as db:
+        domains = db.execute(
+            select(Domain).where(Domain.dkim_enabled == False, Domain.is_verified == True)  # noqa: E712
+        ).scalars().all()
+
+        if not domains:
+            return {"status": "no_pending"}
+
+        results = []
+        for dom in domains:
+            tenant_id = str(dom.tenant_id)
+            domain_name = dom.domain
+            pfx_path = None
+            try:
+                tenant_data = _load_tenant_data(tenant_id)
+                pfx_path = tenant_data.get("cert_pfx_path")
+
+                from app.services.powershell import PowerShellRunner, check_pwsh_available
+                if not check_pwsh_available():
+                    results.append({"domain": domain_name, "status": "skipped", "reason": "no pwsh"})
+                    continue
+
+                ps = PowerShellRunner(tenant_data)
+                err_keywords = ["not exist", "couldn't be found", "couldn't find", "not found", "could not be found"]
+                try:
+                    ps.run([f"Set-DkimSigningConfig -Identity '{domain_name}' -Enabled $true"])
+                except RuntimeError as e:
+                    if any(kw in str(e).lower() for kw in err_keywords):
+                        ps.run([f"New-DkimSigningConfig -DomainName '{domain_name}' -Enabled $true"])
+                    else:
+                        raise
+
+                dom.dkim_enabled = True
+                db.commit()
+                results.append({"domain": domain_name, "status": "success"})
+                logger.info(f"DKIM enabled for {domain_name}")
+
+                publish_event_sync("dkim_enabled", {
+                    "domain": domain_name, "success": True,
+                })
+
+            except Exception as e:
+                logger.warning(f"DKIM retry failed for {domain_name}: {e}")
+                results.append({"domain": domain_name, "status": "failed", "error": str(e)})
+            finally:
+                if pfx_path and os.path.exists(pfx_path):
+                    os.unlink(pfx_path)
+
+        return {"status": "done", "results": results}
