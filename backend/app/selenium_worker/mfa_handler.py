@@ -564,6 +564,9 @@ def _handle_mfa(b):
         logger.info(f"SECRET KEY: {saved_secret_key[:8]}...{saved_secret_key[-4:]}")
 
         otp_code = _mfa_generate_otp(saved_secret_key)
+        if not otp_code:
+            logger.error("Failed to generate OTP — invalid secret key, skipping MFA enrollment")
+            return None
         _mfa_click_next(driver)
         time.sleep(4)
 
@@ -582,6 +585,9 @@ def _handle_mfa(b):
 
         if otp_field:
             otp_code = _mfa_generate_otp(saved_secret_key)
+            if not otp_code:
+                logger.error("Failed to generate OTP on retry")
+                return None
             otp_field.click()
             time.sleep(0.2)
             otp_field.clear()
@@ -733,31 +739,62 @@ def _mfa_click_cant_scan(driver):
 def _mfa_extract_secret(driver):
     try:
         body_text = driver.find_element(By.TAG_NAME, "body").text
-        patterns = [
+        # Labeled patterns (preceded by "Secret key:", "Key:", etc.) — more trustworthy
+        labeled_patterns = [
             r"(?:Secret\s*(?:key)?|Key|Code)[:\s]+([A-Z2-7]{16,})",
             r"(?:secret|key)[=:\s]+([a-zA-Z2-7]{16,})",
-            r"\b([A-Z2-7]{32,64})\b",
-            r"\b([A-Z2-7]{16,31})\b",
         ]
-        for pattern in patterns:
+        # Unlabeled patterns — require stricter validation (32+ chars)
+        unlabeled_patterns = [
+            r"\b([A-Z2-7]{32,64})\b",
+        ]
+        for pattern in labeled_patterns:
             match = re.search(pattern, body_text, re.IGNORECASE)
             if match:
                 secret = match.group(1).strip().upper()
                 if len(secret) >= 16 and re.match(r'^[A-Z2-7]+$', secret):
+                    if _validate_totp_secret(secret):
+                        return secret
+                    else:
+                        logger.warning(f"Rejected labeled secret match: {secret[:8]}...")
+        for pattern in unlabeled_patterns:
+            match = re.search(pattern, body_text)
+            if match:
+                secret = match.group(1).strip().upper()
+                if re.match(r'^[A-Z2-7]+$', secret) and _validate_totp_secret(secret):
                     return secret
     except Exception:
         pass
     return None
 
 
+def _validate_totp_secret(secret: str) -> bool:
+    """Validate that a string is a real TOTP secret, not a false match like a tenant name."""
+    import base64
+    try:
+        padded = secret + "=" * (-len(secret) % 8)
+        decoded = base64.b32decode(padded)
+        # Real TOTP secrets are typically 20 bytes (32 chars base32) / 128+ bits.
+        # Reject short matches (< 16 bytes) — these are likely tenant names or words.
+        if len(decoded) < 16:
+            return False
+        return True
+    except Exception:
+        return False
+
+
 def _mfa_generate_otp(secret_key):
     import pyotp
     secret = secret_key.replace(" ", "").upper()
-    totp = pyotp.TOTP(secret)
-    remaining = totp.interval - (int(time.time()) % totp.interval)
-    if remaining < 5:
-        time.sleep(remaining + 1)
-    return totp.now()
+    try:
+        totp = pyotp.TOTP(secret)
+        remaining = totp.interval - (int(time.time()) % totp.interval)
+        if remaining < 5:
+            time.sleep(remaining + 1)
+        return totp.now()
+    except Exception as e:
+        logger.error(f"Failed to generate OTP from secret {secret[:8]}...: {e}")
+        return None
 
 
 def _mfa_find_otp_input(driver):
