@@ -3,7 +3,8 @@ import { useCallback, useEffect, useState } from "react";
 import { api } from "@/lib/api";
 import { Tenant, MailboxJob, WSEvent } from "@/lib/types";
 import { useWebSocket } from "@/hooks/useWebSocket";
-import { Plus, StopCircle, Download } from "lucide-react";
+import { Plus, StopCircle, Download, ChevronDown, ChevronRight, Shield, ShieldCheck, Loader2 } from "lucide-react";
+import MailboxPipelineProgress from "@/components/mailboxes/MailboxPipelineProgress";
 
 export default function MailboxesPage() {
   const [tenants, setTenants] = useState<Tenant[]>([]);
@@ -14,6 +15,8 @@ export default function MailboxesPage() {
   const [cfEmail, setCfEmail] = useState("");
   const [cfApiKey, setCfApiKey] = useState("");
   const [loading, setLoading] = useState(false);
+  const [expandedJobs, setExpandedJobs] = useState<Set<string>>(new Set());
+  const [dkimLoading, setDkimLoading] = useState<Set<string>>(new Set());
 
   const loadData = useCallback(async () => {
     try {
@@ -29,9 +32,42 @@ export default function MailboxesPage() {
     if (event.type === "mailbox_pipeline_progress") {
       loadData();
     }
+    if (event.type === "mailbox_step_result" && event.job_id) {
+      setJobs(prev => prev.map(j => {
+        if (j.id !== event.job_id) return j;
+        const updated = { ...(j.step_results || {}) };
+        if (event.step) {
+          updated[String(event.step)] = {
+            status: event.step_status as any,
+            message: event.message || "",
+            detail: event.detail,
+          };
+        }
+        return { ...j, step_results: updated };
+      }));
+    }
+    if (event.type === "dkim_enabled" && event.job_id) {
+      setDkimLoading(prev => { const n = new Set(prev); n.delete(event.job_id!); return n; });
+      if (event.success) {
+        setJobs(prev => prev.map(j =>
+          j.id === event.job_id ? { ...j, dkim_enabled: true } : j
+        ));
+      } else {
+        alert(`DKIM enable failed: ${event.error || "Unknown error"}`);
+      }
+    }
   }, [loadData]);
 
   useWebSocket(onWsMessage);
+
+  function toggleExpanded(jobId: string) {
+    setExpandedJobs(prev => {
+      const next = new Set(prev);
+      if (next.has(jobId)) next.delete(jobId);
+      else next.add(jobId);
+      return next;
+    });
+  }
 
   async function handleCreate(e: React.FormEvent) {
     e.preventDefault();
@@ -52,8 +88,25 @@ export default function MailboxesPage() {
     }
   }
 
+  async function handleEnableDkim(jobId: string) {
+    setDkimLoading(prev => new Set(prev).add(jobId));
+    try {
+      await api.enableDkim(jobId);
+    } catch (err: any) {
+      setDkimLoading(prev => { const n = new Set(prev); n.delete(jobId); return n; });
+      alert(err.message);
+    }
+  }
+
   async function handleExport(tenantId: string) {
     window.open(`/api/v1/mailboxes/${tenantId}/export`, "_blank");
+  }
+
+  // Parse current step number from phase string like "Step 3/9: Add Domain"
+  function parseCurrentStep(phase: string | null): number | null {
+    if (!phase) return null;
+    const m = phase.match(/^Step (\d+)\//);
+    return m ? parseInt(m[1], 10) : null;
   }
 
   const STATUS_COLORS: Record<string, string> = {
@@ -140,6 +193,7 @@ export default function MailboxesPage() {
         <table className="w-full text-sm">
           <thead className="bg-gray-50">
             <tr>
+              <th className="w-8 px-2 py-3"></th>
               <th className="text-left px-4 py-3">Domain</th>
               <th className="text-left px-4 py-3">Count</th>
               <th className="text-left px-4 py-3">Status</th>
@@ -148,42 +202,86 @@ export default function MailboxesPage() {
               <th className="text-right px-4 py-3">Actions</th>
             </tr>
           </thead>
-          <tbody>
-            {jobs.map((j) => (
-              <tr key={j.id} className="border-t">
-                <td className="px-4 py-3">{j.domain}</td>
-                <td className="px-4 py-3">{j.mailbox_count}</td>
-                <td className="px-4 py-3">
-                  <span className={`px-2 py-1 rounded-full text-xs font-medium ${STATUS_COLORS[j.status] || ""}`}>
-                    {j.status}
-                  </span>
-                </td>
-                <td className="px-4 py-3 text-gray-500 text-xs">{j.current_phase || "—"}</td>
-                <td className="px-4 py-3 text-xs text-gray-500">{new Date(j.created_at).toLocaleString()}</td>
-                <td className="px-4 py-3 text-right">
-                  {j.status === "running" && (
-                    <button
-                      onClick={async () => { try { await api.stopJob(j.id); loadData(); } catch (err: any) { alert(err.message); } }}
-                      className="p-1 hover:bg-red-50 rounded"
-                    >
-                      <StopCircle size={16} className="text-red-500" />
-                    </button>
+          {jobs.map((j) => {
+              const isExpanded = expandedJobs.has(j.id);
+              return (
+                <tbody key={j.id}>
+                  <tr className="border-t hover:bg-gray-50 cursor-pointer" onClick={() => toggleExpanded(j.id)}>
+                    <td className="px-2 py-3 text-center">
+                      {isExpanded
+                        ? <ChevronDown size={14} className="text-gray-400 inline" />
+                        : <ChevronRight size={14} className="text-gray-400 inline" />}
+                    </td>
+                    <td className="px-4 py-3">{j.domain}</td>
+                    <td className="px-4 py-3">{j.mailbox_count}</td>
+                    <td className="px-4 py-3">
+                      <span className={`px-2 py-1 rounded-full text-xs font-medium ${STATUS_COLORS[j.status] || ""}`}>
+                        {j.status}
+                      </span>
+                    </td>
+                    <td className="px-4 py-3 text-gray-500 text-xs">{j.current_phase || "—"}</td>
+                    <td className="px-4 py-3 text-xs text-gray-500">{new Date(j.created_at).toLocaleString()}</td>
+                    <td className="px-4 py-3 text-right" onClick={(e) => e.stopPropagation()}>
+                      <div className="flex items-center justify-end gap-1">
+                        {j.status === "running" && (
+                          <button
+                            onClick={async () => { try { await api.stopJob(j.id); loadData(); } catch (err: any) { alert(err.message); } }}
+                            className="p-1 hover:bg-red-50 rounded" title="Stop pipeline"
+                          >
+                            <StopCircle size={16} className="text-red-500" />
+                          </button>
+                        )}
+                        {j.status === "complete" && (
+                          <>
+                            {j.dkim_enabled ? (
+                              <span className="p-1" title="DKIM enabled">
+                                <ShieldCheck size={16} className="text-green-600" />
+                              </span>
+                            ) : dkimLoading.has(j.id) ? (
+                              <span className="p-1" title="Enabling DKIM...">
+                                <Loader2 size={16} className="text-purple-500 animate-spin" />
+                              </span>
+                            ) : (
+                              <button
+                                onClick={() => handleEnableDkim(j.id)}
+                                className="p-1 hover:bg-purple-50 rounded" title="Enable DKIM"
+                              >
+                                <Shield size={16} className="text-purple-500" />
+                              </button>
+                            )}
+                            <button
+                              onClick={() => handleExport(j.tenant_id)}
+                              className="p-1 hover:bg-green-50 rounded" title="Export CSV"
+                            >
+                              <Download size={16} className="text-green-600" />
+                            </button>
+                          </>
+                        )}
+                      </div>
+                    </td>
+                  </tr>
+                  {isExpanded && (
+                    <tr className="border-t bg-gray-50/50">
+                      <td colSpan={7} className="px-6 py-2">
+                        <MailboxPipelineProgress
+                          stepResults={j.step_results}
+                          jobStatus={j.status}
+                          currentStep={parseCurrentStep(j.current_phase)}
+                        />
+                        {j.error_message && (
+                          <div className="mt-2 p-3 bg-red-50 rounded text-xs text-red-700 font-mono whitespace-pre-wrap max-h-40 overflow-auto">
+                            {j.error_message}
+                          </div>
+                        )}
+                      </td>
+                    </tr>
                   )}
-                  {j.status === "complete" && (
-                    <button
-                      onClick={() => handleExport(j.tenant_id)}
-                      className="p-1 hover:bg-green-50 rounded"
-                    >
-                      <Download size={16} className="text-green-600" />
-                    </button>
-                  )}
-                </td>
-              </tr>
-            ))}
+                </tbody>
+              );
+            })}
             {jobs.length === 0 && (
-              <tr><td colSpan={6} className="px-4 py-8 text-center text-gray-400">No jobs yet</td></tr>
+              <tbody><tr><td colSpan={7} className="px-4 py-8 text-center text-gray-400">No jobs yet</td></tr></tbody>
             )}
-          </tbody>
         </table>
       </div>
     </div>

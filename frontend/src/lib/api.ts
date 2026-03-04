@@ -52,6 +52,7 @@ export const api = {
     request(`/api/v1/mailboxes/${tenantId}/create`, { method: "POST", body: JSON.stringify(data) }),
   listMailboxJobs: () => request<{ jobs: any[] }>("/api/v1/mailbox-jobs"),
   stopJob: (jobId: string) => request(`/api/v1/mailbox-jobs/${jobId}/stop`, { method: "POST" }),
+  enableDkim: (jobId: string) => request<{ status: string }>(`/api/v1/mailbox-jobs/${jobId}/enable-dkim`, { method: "POST" }),
 
   // Monitor
   dashboard: () => request<any>("/api/v1/monitor/dashboard"),

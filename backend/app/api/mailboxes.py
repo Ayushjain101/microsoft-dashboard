@@ -58,6 +58,8 @@ class MailboxJobOut(BaseModel):
     status: str
     current_phase: str | None
     error_message: str | None
+    step_results: dict | None
+    dkim_enabled: bool
     created_at: str
     completed_at: str | None
 
@@ -74,7 +76,7 @@ def _mailbox_to_out(m: Mailbox) -> dict:
     }
 
 
-def _job_to_out(j: MailboxJob) -> dict:
+def _job_to_out(j: MailboxJob, dkim_enabled: bool = False) -> dict:
     return {
         "id": str(j.id),
         "tenant_id": str(j.tenant_id),
@@ -83,6 +85,8 @@ def _job_to_out(j: MailboxJob) -> dict:
         "status": j.status,
         "current_phase": j.current_phase,
         "error_message": j.error_message,
+        "step_results": j.step_results,
+        "dkim_enabled": dkim_enabled,
         "created_at": j.created_at.isoformat() if j.created_at else None,
         "completed_at": j.completed_at.isoformat() if j.completed_at else None,
     }
@@ -174,11 +178,24 @@ async def create_mailboxes(
 jobs_router = APIRouter(prefix="/api/v1/mailbox-jobs", tags=["mailbox-jobs"], dependencies=[Depends(check_auth)])
 
 
+async def _get_dkim_status(db: AsyncSession, tenant_id, domain: str) -> bool:
+    """Look up DKIM status from the Domain table."""
+    result = await db.execute(
+        select(Domain.dkim_enabled).where(Domain.tenant_id == tenant_id, Domain.domain == domain)
+    )
+    row = result.scalar_one_or_none()
+    return bool(row) if row is not None else False
+
+
 @jobs_router.get("")
 async def list_jobs(db: AsyncSession = Depends(get_db)):
     result = await db.execute(select(MailboxJob).order_by(MailboxJob.created_at.desc()))
     jobs = result.scalars().all()
-    return {"jobs": [_job_to_out(j) for j in jobs]}
+    out = []
+    for j in jobs:
+        dkim = await _get_dkim_status(db, j.tenant_id, j.domain)
+        out.append(_job_to_out(j, dkim_enabled=dkim))
+    return {"jobs": out}
 
 
 @jobs_router.post("/{job_id}/stop")
@@ -192,6 +209,19 @@ async def stop_job(job_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
     job.status = "stopped"
     await db.commit()
     return {"status": "stopped"}
+
+
+@jobs_router.post("/{job_id}/enable-dkim")
+async def enable_dkim(job_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
+    job = await db.get(MailboxJob, job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    if job.status != "complete":
+        raise HTTPException(status_code=409, detail="Job must be complete before enabling DKIM")
+
+    from app.tasks.mailbox_pipeline import enable_dkim_task
+    enable_dkim_task.delay(str(job.id))
+    return {"status": "queued"}
 
 
 # Note: jobs_router is included in main.py separately

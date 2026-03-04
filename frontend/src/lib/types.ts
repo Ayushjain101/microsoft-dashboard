@@ -26,6 +26,12 @@ export interface Mailbox {
   created_at: string;
 }
 
+export interface StepResult {
+  status: "success" | "warning" | "failed";
+  message: string;
+  detail?: string;
+}
+
 export interface MailboxJob {
   id: string;
   tenant_id: string;
@@ -34,6 +40,8 @@ export interface MailboxJob {
   status: string;
   current_phase: string | null;
   error_message: string | null;
+  step_results: Record<string, StepResult> | null;
+  dkim_enabled: boolean;
   created_at: string;
   completed_at: string | null;
 }
@@ -41,10 +49,14 @@ export interface MailboxJob {
 export interface WSEvent {
   type: string;
   tenant_id?: string;
+  job_id?: string;
   step?: number;
   total?: number;
   message?: string;
   status?: string;
+  step_status?: string;
+  detail?: string;
+  success?: boolean;
   [key: string]: any;
 }
 

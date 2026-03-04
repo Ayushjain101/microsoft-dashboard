@@ -10,6 +10,7 @@ from sqlalchemy import (
     ForeignKey,
     Index,
     Integer,
+    JSON,
     LargeBinary,
     String,
     Text,
@@ -97,8 +98,10 @@ class MailboxJob(Base):
     status: Mapped[str] = mapped_column(String(20), default="queued")
     current_phase: Mapped[str | None] = mapped_column(String(200))
     error_message: Mapped[str | None] = mapped_column(Text)
+    step_results: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     celery_task_id: Mapped[str | None] = mapped_column(String(255))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     tenant: Mapped["Tenant"] = relationship(back_populates="mailbox_jobs")
