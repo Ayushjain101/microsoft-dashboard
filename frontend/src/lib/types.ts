@@ -7,6 +7,7 @@ export interface Tenant {
   error_message: string | null;
   created_at: string;
   updated_at: string;
+  mailbox_count?: number;
   completed_at: string | null;
   // Detail fields (only on getTenant)
   tenant_id_ms?: string | null;

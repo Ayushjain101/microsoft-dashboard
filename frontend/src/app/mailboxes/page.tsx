@@ -135,7 +135,9 @@ export default function MailboxesPage() {
             >
               <option value="">Select tenant...</option>
               {tenants.map((t) => (
-                <option key={t.id} value={t.id}>{t.name} ({t.admin_email})</option>
+                <option key={t.id} value={t.id}>
+                  {t.name} ({t.admin_email}) — {t.mailbox_count ?? 0} mailboxes
+                </option>
               ))}
             </select>
           </div>

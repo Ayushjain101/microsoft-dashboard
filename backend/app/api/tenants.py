@@ -13,7 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import check_auth
 from app.database import get_db
-from app.models import Tenant
+from app.models import Mailbox, Tenant
 from app.services.encryption import encrypt, decrypt
 
 router = APIRouter(prefix="/api/v1/tenants", tags=["tenants"], dependencies=[Depends(check_auth)])
@@ -105,13 +105,24 @@ async def list_tenants(
     if status_filter and status_filter not in valid_statuses:
         raise HTTPException(status_code=400, detail=f"Invalid status filter. Valid: {', '.join(valid_statuses)}")
 
-    query = select(Tenant).order_by(Tenant.created_at.desc())
+    # Subquery for mailbox count per tenant
+    mailbox_count_sq = (
+        select(Mailbox.tenant_id, func.count().label("mailbox_count"))
+        .group_by(Mailbox.tenant_id)
+        .subquery()
+    )
+
+    query = (
+        select(Tenant, mailbox_count_sq.c.mailbox_count)
+        .outerjoin(mailbox_count_sq, Tenant.id == mailbox_count_sq.c.tenant_id)
+        .order_by(Tenant.created_at.desc())
+    )
     if status_filter:
         query = query.where(Tenant.status == status_filter)
 
     query = query.offset((page - 1) * per_page).limit(per_page)
     result = await db.execute(query)
-    tenants = result.scalars().all()
+    rows = result.all()
 
     # Count total
     count_q = select(func.count()).select_from(Tenant)
@@ -120,8 +131,14 @@ async def list_tenants(
     count_result = await db.execute(count_q)
     total = count_result.scalar()
 
+    tenants_out = []
+    for tenant, mb_count in rows:
+        out = _tenant_to_out(tenant)
+        out["mailbox_count"] = mb_count or 0
+        tenants_out.append(out)
+
     return {
-        "tenants": [_tenant_to_out(t) for t in tenants],
+        "tenants": tenants_out,
         "total": total,
         "page": page,
         "per_page": per_page,
