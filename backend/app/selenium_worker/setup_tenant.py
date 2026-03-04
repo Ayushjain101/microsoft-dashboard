@@ -42,7 +42,7 @@ def setup_single_tenant(
         progress_callback: callable(step: int, message: str) for progress updates
     """
     def progress(step, msg):
-        logger.info(f"[Step {step}/12] {msg}")
+        logger.info(f"[Step {step}/13] {msg}")
         if progress_callback:
             progress_callback(step, msg)
 
