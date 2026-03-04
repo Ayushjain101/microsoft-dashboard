@@ -184,8 +184,10 @@ RestartSec=5
 WantedBy=multi-user.target
 EOF
 
-    # --- Selenium Worker (tenant_setup queue) — only on selenium server ---
-    if [ "${IS_SELENIUM_SERVER:-}" = "true" ] || command -v pwsh &>/dev/null; then
+    # --- Selenium Worker (tenant_setup queue) — only on selenium server (15.204.174.187) ---
+    SELENIUM_SERVER_IP="15.204.174.187"
+    MY_IP=$(hostname -I | awk '{print $1}')
+    if [ "${IS_SELENIUM_SERVER:-}" = "true" ] || [ "$MY_IP" = "$SELENIUM_SERVER_IP" ]; then
         cat > /etc/systemd/system/tenant-selenium.service <<EOF
 [Unit]
 Description=Tenant Selenium Worker (tenant_setup queue)
