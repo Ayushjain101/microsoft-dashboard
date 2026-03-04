@@ -184,8 +184,9 @@ RestartSec=5
 WantedBy=multi-user.target
 EOF
 
-    # --- Selenium Worker (tenant_setup queue) ---
-    cat > /etc/systemd/system/tenant-selenium.service <<EOF
+    # --- Selenium Worker (tenant_setup queue) — only on selenium server ---
+    if [ "${IS_SELENIUM_SERVER:-}" = "true" ] || command -v pwsh &>/dev/null; then
+        cat > /etc/systemd/system/tenant-selenium.service <<EOF
 [Unit]
 Description=Tenant Selenium Worker (tenant_setup queue)
 After=network.target postgresql.service redis-server.service
@@ -198,13 +199,18 @@ EnvironmentFile=$ENV_FILE
 Environment=DISPLAY=:99
 Environment=PYTHONUNBUFFERED=1
 ExecStartPre=/usr/bin/bash -c 'Xvfb :99 -screen 0 1920x1080x24 -nolisten tcp &'
-ExecStart=$VENV_DIR/bin/celery -A app.tasks.celery_app worker -Q tenant_setup -c 1 --loglevel=info -n selenium@%H
+ExecStart=$VENV_DIR/bin/celery -A app.tasks.celery_app worker -Q tenant_setup -c 2 --loglevel=info -n selenium@%H
 Restart=always
 RestartSec=5
 
 [Install]
 WantedBy=multi-user.target
 EOF
+        SELENIUM_SERVICE="tenant-selenium"
+    else
+        echo "  (Skipping selenium worker — not a selenium server)"
+        SELENIUM_SERVICE=""
+    fi
 
     # --- Frontend ---
     cat > /etc/systemd/system/tenant-frontend.service <<EOF
@@ -236,8 +242,12 @@ EOF
 # ── 8. Start everything ────────────────────────────────────────────────
 start_services() {
     echo "==> Starting services..."
-    systemctl enable --now tenant-api tenant-celery tenant-beat tenant-selenium tenant-frontend
-    systemctl restart tenant-api tenant-celery tenant-beat tenant-selenium tenant-frontend
+    local SERVICES="tenant-api tenant-celery tenant-beat tenant-frontend"
+    if [ -n "${SELENIUM_SERVICE:-}" ]; then
+        SERVICES="$SERVICES $SELENIUM_SERVICE"
+    fi
+    systemctl enable --now $SERVICES
+    systemctl restart $SERVICES
     systemctl enable --now caddy
     systemctl reload caddy 2>/dev/null || systemctl restart caddy
     echo "==> All services started!"
