@@ -509,7 +509,7 @@ def run_mailbox_pipeline(self, job_id: str):
             os.unlink(pfx_path)
 
 
-@celery_app.task(name="app.tasks.mailbox_pipeline.enable_dkim_task", bind=True, queue="mailbox",
+@celery_app.task(name="app.tasks.mailbox_pipeline.enable_dkim_task", bind=True, queue="tenant_setup",
                  acks_late=True, reject_on_worker_lost=True)
 def enable_dkim_task(self, job_id: str):
     """Retry enabling DKIM for a completed mailbox job."""
