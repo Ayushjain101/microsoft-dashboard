@@ -1,0 +1,34 @@
+FROM python:3.12-slim-bookworm
+
+WORKDIR /app
+
+# System deps: Chrome, xvfb, PowerShell, Azure CLI
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential libpq-dev curl wget gnupg unzip xvfb xauth \
+    # Chrome
+    && wget -qO- https://dl.google.com/linux/linux_signing_key.pub | gpg --dearmor -o /usr/share/keyrings/google-chrome.gpg \
+    && echo "deb [arch=amd64 signed-by=/usr/share/keyrings/google-chrome.gpg] http://dl.google.com/linux/chrome/deb/ stable main" > /etc/apt/sources.list.d/google-chrome.list \
+    && apt-get update && apt-get install -y google-chrome-stable \
+    # PowerShell
+    && curl -sSL https://packages.microsoft.com/keys/microsoft.asc | gpg --dearmor -o /usr/share/keyrings/microsoft.gpg \
+    && echo "deb [arch=amd64 signed-by=/usr/share/keyrings/microsoft.gpg] https://packages.microsoft.com/repos/microsoft-debian-bookworm-prod bookworm main" > /etc/apt/sources.list.d/microsoft.list \
+    && apt-get update && apt-get install -y powershell \
+    # Azure CLI
+    && curl -sL https://aka.ms/InstallAzureCLIDeb | bash \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Exchange Online module
+RUN pwsh -Command "Install-Module ExchangeOnlineManagement -Force -Scope AllUsers -AllowClobber"
+
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+COPY . .
+
+ENV PYTHONUNBUFFERED=1
+ENV DISPLAY=:99
+
+# Run Xvfb in background, then Celery worker
+CMD Xvfb :99 -screen 0 1920x1080x24 -nolisten tcp & \
+    sleep 1 && \
+    celery -A app.tasks.celery_app worker -Q tenant_setup -c 1 --loglevel=info

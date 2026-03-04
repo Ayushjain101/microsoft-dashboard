@@ -17,8 +17,7 @@ credentials.json
 dulcet-metric-489118-j1-*.json
 
 # Output directories
-selenium-setup/output/
-api-scripts/output/
+_legacy/**/output/
 
 # Large / binary files
 *.mp4
@@ -28,6 +27,12 @@ api-scripts/output/
 # Node
 node_modules/
 package-lock.json
+.next/
+out/
+
+# Legacy / old code
+_legacy/
+docs/
 
 # Claude internal
 .claude/

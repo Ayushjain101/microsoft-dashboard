@@ -1,0 +1,17 @@
+decimastellarbolt.info {
+    # API and WebSocket
+    handle /api/* {
+        reverse_proxy localhost:8000
+    }
+    handle /ws/* {
+        reverse_proxy localhost:8000
+    }
+    handle /health {
+        reverse_proxy localhost:8000
+    }
+
+    # Frontend (everything else)
+    handle {
+        reverse_proxy localhost:3000
+    }
+}
