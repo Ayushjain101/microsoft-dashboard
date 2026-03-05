@@ -7,7 +7,7 @@ import { useWebSocket } from "@/hooks/useWebSocket";
 import SetupProgress from "@/components/tenants/SetupProgress";
 import TenantSetupProgress from "@/components/tenants/TenantSetupProgress";
 import TenantHealthResults from "@/components/tenants/TenantHealthResults";
-import { Plus, Play, RotateCcw, Trash2, Download, ChevronDown, Pencil, X, HeartPulse, Loader2, Check, XCircle, FileDown } from "lucide-react";
+import { Plus, Play, RotateCcw, Trash2, Download, ChevronDown, Pencil, X, HeartPulse, Loader2, Check, XCircle, FileDown, AlertTriangle, CheckCircle } from "lucide-react";
 
 const STATUS_COLORS: Record<string, string> = {
   pending: "bg-gray-100 text-gray-700",
@@ -124,6 +124,29 @@ export default function TenantsPage() {
       alert(e.message);
       setHealthChecking((prev) => ({ ...prev, [id]: false }));
     }
+  }
+
+  async function handleBulkHealthCheck() {
+    const ids = selectedIds.size > 0
+      ? Array.from(selectedIds).filter(id => tenants.find(t => t.id === id && t.status === "complete"))
+      : tenants.filter(t => t.status === "complete").map(t => t.id);
+    if (ids.length === 0) { alert("No complete tenants to check"); return; }
+    for (const id of ids) {
+      setHealthChecking((prev) => ({ ...prev, [id]: true }));
+      try { await api.healthCheckTenant(id); } catch {}
+    }
+  }
+
+  function getHealthSummary(t: Tenant): { hasIssues: boolean; issues: string[] } | null {
+    if (!t.health_results) return null;
+    const issues: string[] = [];
+    for (const [key, result] of Object.entries(t.health_results)) {
+      const r = result as any;
+      if (r.status === "fail" || r.status === "warn") {
+        issues.push(r.message || `Check ${key}`);
+      }
+    }
+    return { hasIssues: issues.length > 0, issues };
   }
 
   async function handleSavePassword() {
@@ -348,13 +371,19 @@ export default function TenantsPage() {
         ))}
       </div>
 
-      {/* Export Bar */}
+      {/* Action Bar */}
       <div className="flex items-center gap-2 mb-4">
         <button
           onClick={() => api.exportTenantsCsv()}
           className="flex items-center gap-1.5 px-3 py-1.5 text-xs bg-white border rounded-lg hover:bg-gray-50"
         >
           <FileDown size={14} /> Export All
+        </button>
+        <button
+          onClick={handleBulkHealthCheck}
+          className="flex items-center gap-1.5 px-3 py-1.5 text-xs bg-purple-600 text-white rounded-lg hover:bg-purple-700"
+        >
+          <HeartPulse size={14} /> Health Check {selectedIds.size > 0 ? `Selected (${Array.from(selectedIds).filter(id => tenants.find(t => t.id === id && t.status === "complete")).length})` : `All (${tenants.filter(t => t.status === "complete").length})`}
         </button>
         {selectedIds.size > 0 && (
           <button
@@ -422,18 +451,43 @@ export default function TenantsPage() {
                   </td>
                   <td className="px-4 py-3 text-gray-600">{t.admin_email}</td>
                   <td className="px-4 py-3">
-                    <span className={`px-2 py-1 rounded-full text-xs font-medium ${STATUS_COLORS[t.status] || ""}`}>
-                      {t.status}
-                    </span>
+                    <div className="flex items-center gap-1.5">
+                      <span className={`px-2 py-1 rounded-full text-xs font-medium ${STATUS_COLORS[t.status] || ""}`}>
+                        {t.status}
+                      </span>
+                      {healthChecking[t.id] && <Loader2 size={13} className="text-purple-500 animate-spin" />}
+                      {!healthChecking[t.id] && (() => {
+                        const health = getHealthSummary(t);
+                        if (!health) return null;
+                        return health.hasIssues
+                          ? <AlertTriangle size={13} className="text-red-500" title={`${health.issues.length} issue(s)`} />
+                          : <CheckCircle size={13} className="text-green-500" title="All checks passed" />;
+                      })()}
+                    </div>
                   </td>
-                  <td className="px-4 py-3 text-xs max-w-[300px]">
+                  <td className="px-4 py-3 text-xs max-w-[400px]">
                     {t.error_message ? (
                       <span className="text-red-600 truncate block" title={t.error_message}>
                         {t.error_message.length > 80 ? t.error_message.slice(0, 80) + "…" : t.error_message}
                       </span>
-                    ) : (
-                      <span className="text-gray-500">{t.current_step || "—"}</span>
-                    )}
+                    ) : (() => {
+                      const health = getHealthSummary(t);
+                      if (health && health.hasIssues) {
+                        return (
+                          <div className="flex flex-wrap gap-1">
+                            {health.issues.map((issue, i) => (
+                              <span key={i} className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium bg-red-50 text-red-700 border border-red-200" title={issue}>
+                                {issue.length > 35 ? issue.slice(0, 35) + "…" : issue}
+                              </span>
+                            ))}
+                          </div>
+                        );
+                      }
+                      if (health && !health.hasIssues) {
+                        return <span className="text-green-600 font-medium">All checks passed</span>;
+                      }
+                      return <span className="text-gray-500">{t.current_step || "—"}</span>;
+                    })()}
                   </td>
                   <td className="px-4 py-3 text-right">
                     <div className="flex items-center justify-end gap-1">
