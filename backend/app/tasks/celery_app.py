@@ -50,3 +50,4 @@ celery_app.conf.update(
 import app.tasks.tenant_setup  # noqa: F401, E402
 import app.tasks.mailbox_pipeline  # noqa: F401, E402
 import app.tasks.monitor  # noqa: F401, E402
+import app.tasks.tenant_health  # noqa: F401, E402
