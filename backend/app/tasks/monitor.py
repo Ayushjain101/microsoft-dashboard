@@ -340,7 +340,7 @@ def run_mailflow_check(tenant_id: str):
         commands = [
             "$end = Get-Date",
             "$start = $end.AddHours(-24)",
-            "$traces = Get-MessageTrace -StartDate $start -EndDate $end -PageSize 5000",
+            "$traces = Get-MessageTraceV2 -StartDate $start -EndDate $end -PageSize 5000",
             "$summary = $traces | Group-Object Status | Select-Object Name, Count",
             "$total = ($traces | Measure-Object).Count",
             "$result = @{ total = $total; statuses = @{} }",
