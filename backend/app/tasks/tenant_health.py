@@ -195,6 +195,92 @@ def run_tenant_health_check(self, tenant_id: str):
     return {"status": "complete", "results": results}
 
 
+# Mapping of check numbers to fixable issue keys
+FIXABLE_CHECKS = {
+    "8": "instantly_consent",  # Can re-grant Instantly consent
+}
+
+
+@celery_app.task(name="app.tasks.tenant_health.fix_tenant_health", bind=True, queue="default")
+def fix_tenant_health(self, tenant_id: str):
+    """Attempt to auto-fix failed health checks, then re-run health check."""
+    import requests
+
+    with Session(sync_engine) as db:
+        tenant = db.get(Tenant, tenant_id)
+        if not tenant:
+            return {"status": "error", "reason": "tenant_not_found"}
+
+        health_results = tenant.health_results or {}
+        tenant_id_ms = _decrypt_safe(tenant.tenant_id_ms)
+        client_id = _decrypt_safe(tenant.client_id)
+        client_secret = _decrypt_safe(tenant.client_secret)
+
+    if not all([tenant_id_ms, client_id, client_secret]):
+        publish_event_sync("fix_health_result", {
+            "tenant_id": tenant_id,
+            "status": "error",
+            "detail": "Missing credentials — cannot fix",
+        })
+        return {"status": "error", "reason": "missing_credentials"}
+
+    # Get app token
+    try:
+        r = requests.post(
+            f"https://login.microsoftonline.com/{tenant_id_ms}/oauth2/v2.0/token",
+            data={
+                "client_id": client_id,
+                "client_secret": client_secret,
+                "scope": "https://graph.microsoft.com/.default",
+                "grant_type": "client_credentials",
+            },
+            timeout=30,
+        )
+        token = r.json().get("access_token")
+        if not token:
+            raise ValueError(r.json().get("error_description", "Unknown error"))
+    except Exception as e:
+        publish_event_sync("fix_health_result", {
+            "tenant_id": tenant_id,
+            "status": "error",
+            "detail": f"Token acquisition failed: {str(e)[:300]}",
+        })
+        return {"status": "error", "reason": str(e)[:500]}
+
+    fixes_applied = []
+
+    # Fix: Instantly Consent (check 8)
+    check_8 = health_results.get("8", {})
+    if check_8.get("status") in ("fail", "warn"):
+        try:
+            from app.selenium_worker.setup_tenant import _grant_instantly_consent
+            _grant_instantly_consent(token)
+            fixes_applied.append("Instantly Consent granted")
+        except Exception as e:
+            fixes_applied.append(f"Instantly Consent fix failed: {str(e)[:200]}")
+
+    # Fix: Security Defaults / SMTP (not a health check currently, but if check 2 fails due to MFA)
+    # We can also proactively run security fixes if requested
+    # For now, keep it focused on detected issues
+
+    if not fixes_applied:
+        fixes_applied.append("No auto-fixable issues found")
+
+    detail = "; ".join(fixes_applied)
+    logger.info(f"Fix health for tenant {tenant_id}: {detail}")
+
+    publish_event_sync("fix_health_result", {
+        "tenant_id": tenant_id,
+        "status": "complete",
+        "detail": detail,
+    })
+
+    # Re-run health check to update results
+    run_tenant_health_check.delay(tenant_id)
+
+    return {"status": "complete", "detail": detail}
+
+
 def _save_results(tenant_id: str, results: dict):
     """Save health check results to DB and publish WebSocket event."""
     now = datetime.now(timezone.utc)

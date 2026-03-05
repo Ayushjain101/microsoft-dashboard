@@ -7,7 +7,7 @@ import { useWebSocket } from "@/hooks/useWebSocket";
 import SetupProgress from "@/components/tenants/SetupProgress";
 import TenantSetupProgress from "@/components/tenants/TenantSetupProgress";
 import TenantHealthResults from "@/components/tenants/TenantHealthResults";
-import { Plus, Play, RotateCcw, Trash2, Download, ChevronDown, Pencil, X, HeartPulse, Loader2, Check, XCircle, FileDown, AlertTriangle, CheckCircle } from "lucide-react";
+import { Plus, Play, RotateCcw, Trash2, Download, ChevronDown, Pencil, X, HeartPulse, Loader2, Check, XCircle, FileDown, AlertTriangle, CheckCircle, Wrench } from "lucide-react";
 
 const STATUS_COLORS: Record<string, string> = {
   pending: "bg-gray-100 text-gray-700",
@@ -30,6 +30,7 @@ export default function TenantsPage() {
   const [editingTenant, setEditingTenant] = useState<Tenant | null>(null);
   const [editPassword, setEditPassword] = useState("");
   const [editSaving, setEditSaving] = useState(false);
+  const [fixing, setFixing] = useState<Record<string, boolean>>({});
 
   const loadTenants = useCallback(async () => {
     try {
@@ -80,6 +81,10 @@ export default function TenantsPage() {
         })
       );
     }
+    // Handle fix health result events
+    if (event.type === "fix_health_result" && event.tenant_id) {
+      setFixing((prev) => ({ ...prev, [event.tenant_id!]: false }));
+    }
     // Handle health check events
     if (event.type === "tenant_health_check" && event.tenant_id) {
       setHealthChecking((prev) => ({ ...prev, [event.tenant_id!]: false }));
@@ -123,6 +128,34 @@ export default function TenantsPage() {
     } catch (e: any) {
       alert(e.message);
       setHealthChecking((prev) => ({ ...prev, [id]: false }));
+    }
+  }
+
+  async function handleFixHealth(id: string) {
+    setFixing((prev) => ({ ...prev, [id]: true }));
+    try {
+      await api.fixHealth(id);
+    } catch (e: any) {
+      alert(e.message);
+      setFixing((prev) => ({ ...prev, [id]: false }));
+    }
+  }
+
+  async function handleBulkFixHealth() {
+    const ids = selectedIds.size > 0
+      ? Array.from(selectedIds).filter(id => {
+          const t = tenants.find(t => t.id === id);
+          const health = t ? getHealthSummary(t) : null;
+          return t?.status === "complete" && health?.hasIssues;
+        })
+      : tenants.filter(t => {
+          const health = getHealthSummary(t);
+          return t.status === "complete" && health?.hasIssues;
+        }).map(t => t.id);
+    if (ids.length === 0) { alert("No tenants with fixable issues"); return; }
+    for (const id of ids) {
+      setFixing((prev) => ({ ...prev, [id]: true }));
+      try { await api.fixHealth(id); } catch {}
     }
   }
 
@@ -385,6 +418,18 @@ export default function TenantsPage() {
         >
           <HeartPulse size={14} /> Health Check {selectedIds.size > 0 ? `Selected (${Array.from(selectedIds).filter(id => tenants.find(t => t.id === id && t.status === "complete")).length})` : `All (${tenants.filter(t => t.status === "complete").length})`}
         </button>
+        {tenants.some(t => getHealthSummary(t)?.hasIssues) && (
+          <button
+            onClick={handleBulkFixHealth}
+            className="flex items-center gap-1.5 px-3 py-1.5 text-xs bg-orange-500 text-white rounded-lg hover:bg-orange-600"
+          >
+            <Wrench size={14} /> Fix Issues ({
+              selectedIds.size > 0
+                ? Array.from(selectedIds).filter(id => { const t = tenants.find(t => t.id === id); return t && getHealthSummary(t)?.hasIssues; }).length
+                : tenants.filter(t => getHealthSummary(t)?.hasIssues).length
+            })
+          </button>
+        )}
         {selectedIds.size > 0 && (
           <button
             onClick={() => api.exportTenantsCsv(Array.from(selectedIds))}
@@ -474,12 +519,21 @@ export default function TenantsPage() {
                       const health = getHealthSummary(t);
                       if (health && health.hasIssues) {
                         return (
-                          <div className="flex flex-wrap gap-1">
+                          <div className="flex flex-wrap items-center gap-1">
                             {health.issues.map((issue, i) => (
                               <span key={i} className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium bg-red-50 text-red-700 border border-red-200" title={issue}>
                                 {issue.length > 35 ? issue.slice(0, 35) + "…" : issue}
                               </span>
                             ))}
+                            <button
+                              onClick={(e) => { e.stopPropagation(); handleFixHealth(t.id); }}
+                              disabled={fixing[t.id]}
+                              className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[10px] font-medium bg-orange-50 text-orange-700 border border-orange-300 hover:bg-orange-100 disabled:opacity-50"
+                              title="Auto-fix issues"
+                            >
+                              {fixing[t.id] ? <Loader2 size={10} className="animate-spin" /> : <Wrench size={10} />}
+                              Fix
+                            </button>
                           </div>
                         );
                       }
