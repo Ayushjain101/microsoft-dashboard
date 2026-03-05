@@ -788,7 +788,8 @@ def run_mailbox_health_check(self, job_id: str):
         from app.services.powershell import escape_ps_string
         safe_domain = escape_ps_string(domain)
         cmd = (
-            f"Get-Mailbox -ResultSize Unlimited -Filter \"PrimarySmtpAddress -like '*@{safe_domain}'\" "
+            f"Get-Mailbox -RecipientTypeDetails RoomMailbox -ResultSize Unlimited "
+            f"-Filter \"PrimarySmtpAddress -like '*@{safe_domain}'\" "
             f"| ForEach-Object {{ Write-Host \"FOUND: $($_.PrimarySmtpAddress.ToString().ToLower())\" }}"
         )
         stdout, _ = ps.run([cmd], timeout=120)
