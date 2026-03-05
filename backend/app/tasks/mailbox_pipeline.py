@@ -901,6 +901,24 @@ def retry_missing_mailboxes(self, job_id: str):
                     "password": pwd or "P@ssw0rd!2024#Rand",
                 }
 
+            # For custom names, regenerate the full expected identity list to catch
+            # mailboxes that failed in the original run and were never saved to DB
+            if job.custom_names:
+                from app.services.name_generator import generate_custom_identities
+                tenant_name = db.get(Tenant, job.tenant_id).name if db.get(Tenant, job.tenant_id) else "Tenant"
+                expected = generate_custom_identities(
+                    job.custom_names, job.mailbox_count, domain, tenant_name
+                )
+                for mb in expected:
+                    email_key = mb["email"].lower()
+                    if email_key not in db_map:
+                        db_map[email_key] = {
+                            "email": mb["email"],
+                            "display_name": mb["display_name"],
+                            "alias": mb["alias"],
+                            "password": mb["password"],
+                        }
+
         publish_event_sync("retry_missing_result", {"job_id": job_id, "status": "running"})
 
         tenant_data = _load_tenant_data(tenant_id)
@@ -974,6 +992,28 @@ def retry_missing_mailboxes(self, job_id: str):
         created_emails = succeeded["CREATED:"]
         exists_emails = succeeded["EXISTS:"]
         ok_emails = created_emails | exists_emails
+
+        # Save newly created mailboxes to DB (ones that were missing from DB, e.g. original step 7 failures)
+        if created_emails:
+            with Session(sync_engine) as db:
+                dom = db.execute(
+                    select(Domain).where(Domain.tenant_id == tenant_id, Domain.domain == domain)
+                ).scalar_one_or_none()
+                domain_id = dom.id if dom else None
+                for email in created_emails:
+                    existing = db.execute(
+                        select(Mailbox).where(Mailbox.email == email)
+                    ).scalar_one_or_none()
+                    if not existing and email in db_map:
+                        mb = db_map[email]
+                        db.add(Mailbox(
+                            tenant_id=tenant_id,
+                            domain_id=domain_id,
+                            display_name=mb["display_name"],
+                            email=mb["email"],
+                            password=encrypt(mb["password"]),
+                        ))
+                db.commit()
 
         # Step 3: Enable SMTP for successfully created mailboxes
         if ok_emails:
