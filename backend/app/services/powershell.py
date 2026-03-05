@@ -4,11 +4,14 @@ Adapted from api-scripts/services/powershell.py — as-is.
 """
 
 import logging
+import re
 import shutil
 import subprocess
 
 logger = logging.getLogger(__name__)
 PWSH_PATH = "pwsh"
+
+_ANSI_RE = re.compile(r'\x1b\[[0-9;]*m')
 
 
 def escape_ps_string(value: str) -> str:
@@ -70,9 +73,12 @@ class PowerShellRunner:
             capture_output=True, text=True, timeout=timeout
         )
         if result.returncode != 0:
+            # Strip ANSI escape codes from PowerShell output for clean error messages
+            stdout_clean = _ANSI_RE.sub('', result.stdout)
+            stderr_clean = _ANSI_RE.sub('', result.stderr)
             raise RuntimeError(
                 f"PowerShell error (exit {result.returncode}):\n"
-                f"STDOUT: {result.stdout}\nSTDERR: {result.stderr}"
+                f"STDOUT: {stdout_clean}\nSTDERR: {stderr_clean}"
             )
         return result.stdout, result.stderr
 
