@@ -37,6 +37,7 @@ def setup_single_tenant(
     progress_callback=None,
     step_result_callback=None,
     default_new_password: str = "Atoz12345@!",
+    on_mfa_secret=None,
 ) -> dict:
     """Run the full setup flow for one tenant.
 
@@ -76,7 +77,7 @@ def setup_single_tenant(
         step = "login"
         progress(1, "Browser Login")
         if not skip_login:
-            login_result = do_az_login(az_path, email, password, new_password, mfa_secret=mfa_secret)
+            login_result = do_az_login(az_path, email, password, new_password, mfa_secret=mfa_secret, on_mfa_secret=on_mfa_secret)
             if login_result["password_changed"]:
                 password = login_result["working_password"]
                 result["admin_password"] = password

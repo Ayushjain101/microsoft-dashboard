@@ -1,5 +1,6 @@
 """Celery task: 13-step Selenium tenant setup."""
 
+import logging
 import traceback
 from datetime import datetime, timezone
 
@@ -12,6 +13,8 @@ from app.models import Tenant
 from app.services.encryption import encrypt, encrypt_bytes
 from app.tasks.celery_app import celery_app
 from app.websocket import publish_event_sync
+
+logger = logging.getLogger(__name__)
 
 sync_engine = create_engine(settings.database_url_sync, pool_pre_ping=True, pool_recycle=3600)
 
@@ -108,6 +111,15 @@ def run_tenant_setup(self, tenant_id: str):
         def on_step_result(step: int, status: str, detail: str | None = None):
             _record_step_result(tenant_id, step, status, detail)
 
+        def on_mfa_secret(secret: str):
+            """Persist MFA secret to DB immediately upon extraction — before OTP attempt."""
+            with Session(sync_engine) as s:
+                t = s.get(Tenant, tenant_id)
+                if t:
+                    t.mfa_secret = encrypt(secret)
+                    s.commit()
+                    logger.info(f"MFA secret persisted to DB immediately for {tenant_id}")
+
         result = setup_single_tenant(
             email=email,
             password=password,
@@ -115,6 +127,7 @@ def run_tenant_setup(self, tenant_id: str):
             mfa_secret=mfa_secret,
             progress_callback=on_progress,
             step_result_callback=on_step_result,
+            on_mfa_secret=on_mfa_secret,
         )
 
         # Always save partial results (password change, mfa_secret, etc.) even on failure
