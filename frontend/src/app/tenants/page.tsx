@@ -460,8 +460,8 @@ export default function TenantsPage() {
                         const health = getHealthSummary(t);
                         if (!health) return null;
                         return health.hasIssues
-                          ? <AlertTriangle size={13} className="text-red-500" title={`${health.issues.length} issue(s)`} />
-                          : <CheckCircle size={13} className="text-green-500" title="All checks passed" />;
+                          ? <span title={`${health.issues.length} issue(s)`}><AlertTriangle size={13} className="text-red-500" /></span>
+                          : <span title="All checks passed"><CheckCircle size={13} className="text-green-500" /></span>;
                       })()}
                     </div>
                   </td>
