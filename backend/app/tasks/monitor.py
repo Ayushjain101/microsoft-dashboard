@@ -62,71 +62,93 @@ def _create_alert(tenant_id: str, alert_type: str, severity: str, message: str):
 
 
 def smtp_check(tenant_id: str, mailbox_id: str, email: str, password: str) -> str:
-    """Test SMTP AUTH login for a mailbox."""
-    start = time.time()
-    try:
-        server = smtplib.SMTP("smtp.office365.com", 587, timeout=15)
-        server.starttls()
-        server.login(email, password)
-        server.quit()
-        elapsed = int((time.time() - start) * 1000)
-        _save_check(tenant_id, mailbox_id, "smtp_send", "healthy",
-                     "SMTP login successful", elapsed)
-        return "healthy"
-    except smtplib.SMTPAuthenticationError as e:
-        elapsed = int((time.time() - start) * 1000)
-        detail = str(e)[:200]
-        status = "auth_failed"
-        if "5.7.139" in str(e) or "blocked" in str(e).lower():
-            status = "blocked"
-        _save_check(tenant_id, mailbox_id, "smtp_send", status, detail, elapsed)
-        return status
-    except (socket.timeout, smtplib.SMTPConnectError) as e:
-        elapsed = int((time.time() - start) * 1000)
-        _save_check(tenant_id, mailbox_id, "smtp_send", "timeout",
-                     str(e)[:200], elapsed)
-        return "timeout"
-    except Exception as e:
-        elapsed = int((time.time() - start) * 1000)
-        _save_check(tenant_id, mailbox_id, "smtp_send", "error",
-                     str(e)[:200], elapsed)
-        return "error"
+    """Test SMTP AUTH login for a mailbox (up to 2 attempts for transient errors)."""
+    last_exc = None
+    for attempt in range(2):
+        start = time.time()
+        try:
+            server = smtplib.SMTP("smtp.office365.com", 587, timeout=15)
+            server.starttls()
+            server.login(email, password)
+            server.quit()
+            elapsed = int((time.time() - start) * 1000)
+            _save_check(tenant_id, mailbox_id, "smtp_send", "healthy",
+                         "SMTP login successful", elapsed)
+            return "healthy"
+        except smtplib.SMTPAuthenticationError as e:
+            # Deterministic — never retry
+            elapsed = int((time.time() - start) * 1000)
+            detail = str(e)[:200]
+            status = "auth_failed"
+            if "5.7.139" in str(e) or "blocked" in str(e).lower():
+                status = "blocked"
+            _save_check(tenant_id, mailbox_id, "smtp_send", status, detail, elapsed)
+            return status
+        except (socket.timeout, smtplib.SMTPConnectError, ConnectionError, OSError) as e:
+            last_exc = e
+            if attempt < 1:
+                logger.warning(f"SMTP transient error for {email}, retrying in 3s: {e}")
+                time.sleep(3)
+                continue
+            elapsed = int((time.time() - start) * 1000)
+            _save_check(tenant_id, mailbox_id, "smtp_send", "timeout",
+                         str(e)[:200], elapsed)
+            return "timeout"
+        except Exception as e:
+            elapsed = int((time.time() - start) * 1000)
+            _save_check(tenant_id, mailbox_id, "smtp_send", "error",
+                         str(e)[:200], elapsed)
+            return "error"
+    # Should not reach here, but just in case
+    elapsed = int((time.time() - start) * 1000)
+    _save_check(tenant_id, mailbox_id, "smtp_send", "error",
+                 str(last_exc)[:200], elapsed)
+    return "error"
 
 
 def dns_check(tenant_id: str, domain: str) -> str:
-    """Check MX and SPF records for a domain."""
+    """Check MX and SPF records for a domain (up to 2 attempts for transient errors)."""
     import subprocess
-    try:
-        # MX check
-        result = subprocess.run(
-            ["dig", "+short", "MX", domain],
-            capture_output=True, text=True, timeout=10,
-        )
-        mx_records = result.stdout.strip()
-        has_mx = "mail.protection.outlook.com" in mx_records
+    for attempt in range(2):
+        try:
+            # MX check
+            result = subprocess.run(
+                ["dig", "+short", "MX", domain],
+                capture_output=True, text=True, timeout=10,
+            )
+            mx_records = result.stdout.strip()
+            has_mx = "mail.protection.outlook.com" in mx_records
 
-        # SPF check
-        result = subprocess.run(
-            ["dig", "+short", "TXT", domain],
-            capture_output=True, text=True, timeout=10,
-        )
-        has_spf = "spf.protection.outlook.com" in result.stdout
+            # SPF check
+            result = subprocess.run(
+                ["dig", "+short", "TXT", domain],
+                capture_output=True, text=True, timeout=10,
+            )
+            has_spf = "spf.protection.outlook.com" in result.stdout
 
-        if has_mx and has_spf:
-            status = "healthy"
-            detail = f"MX: {mx_records[:100]}"
-        elif has_mx:
-            status = "warning"
-            detail = "MX OK but SPF missing"
-        else:
-            status = "error"
-            detail = "MX record missing"
+            if has_mx and has_spf:
+                status = "healthy"
+                detail = f"MX: {mx_records[:100]}"
+            elif has_mx:
+                status = "warning"
+                detail = "MX OK but SPF missing"
+            else:
+                status = "error"
+                detail = "MX record missing"
 
-        _save_check(tenant_id, None, "dns", status, detail)
-        return status
-    except Exception as e:
-        _save_check(tenant_id, None, "dns", "error", str(e)[:200])
-        return "error"
+            _save_check(tenant_id, None, "dns", status, detail)
+            return status
+        except (subprocess.TimeoutExpired, OSError) as e:
+            if attempt < 1:
+                logger.warning(f"DNS transient error for {domain}, retrying in 2s: {e}")
+                time.sleep(2)
+                continue
+            _save_check(tenant_id, None, "dns", "error", str(e)[:200])
+            return "error"
+        except Exception as e:
+            _save_check(tenant_id, None, "dns", "error", str(e)[:200])
+            return "error"
+    return "error"
 
 
 @celery_app.task(name="app.tasks.monitor.run_tenant_check", queue="monitor")
@@ -347,7 +369,14 @@ def run_mailflow_check(tenant_id: str):
             "foreach ($s in $summary) { $result.statuses[$s.Name] = $s.Count }",
             "$result | ConvertTo-Json -Compress",
         ]
-        stdout, stderr = ps.run(commands, timeout=120)
+        # Retry once on transient PowerShell errors
+        try:
+            stdout, stderr = ps.run(commands, timeout=120)
+        except RuntimeError as e:
+            logger.warning(f"Mailflow PowerShell transient error for {tenant_id}, retrying in 10s: {e}")
+            time.sleep(10)
+            ps = PowerShellRunner(tenant_data)
+            stdout, stderr = ps.run(commands, timeout=120)
         result = _parse_mailflow_output(stdout)
 
         total = result.get("total", 0)

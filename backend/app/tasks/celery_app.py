@@ -17,6 +17,25 @@ celery_app.conf.update(
     broker_connection_retry_on_startup=True,
     broker_connection_retry=True,
     worker_cancel_long_running_tasks_on_connection_loss=True,
+    task_soft_time_limit=900,   # 15 min global default
+    task_time_limit=960,        # 16 min global hard limit
+    task_annotations={
+        "app.tasks.tenant_setup.run_tenant_setup": {
+            "soft_time_limit": 1800, "time_limit": 1860,   # 30/31 min
+        },
+        "app.tasks.mailbox_pipeline.run_mailbox_pipeline": {
+            "soft_time_limit": 2400, "time_limit": 2460,   # 40/41 min
+        },
+        "app.tasks.monitor.run_mailflow_check": {
+            "soft_time_limit": 180, "time_limit": 210,     # 3/3.5 min
+        },
+        "app.tasks.monitor.run_tenant_check": {
+            "soft_time_limit": 300, "time_limit": 330,     # 5/5.5 min
+        },
+        "app.tasks.monitor.reap_stale_tasks": {
+            "soft_time_limit": 120, "time_limit": 150,     # 2/2.5 min
+        },
+    },
     task_routes={
         "app.tasks.tenant_setup.*": {"queue": "tenant_setup"},
         "app.tasks.mailbox_pipeline.enable_dkim_task": {"queue": "tenant_setup"},

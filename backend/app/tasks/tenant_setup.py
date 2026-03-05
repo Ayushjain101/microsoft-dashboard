@@ -173,27 +173,37 @@ def run_tenant_setup(self, tenant_id: str):
             _publish_progress(tenant_id, 0, total, f"Failed: {error_msg}", "failed")
             return {"status": "failed", "error": error_msg}
 
-        with Session(sync_engine) as db:
-            tenant = db.get(Tenant, tenant_id)
-            if tenant:
-                if result.get("tenant_id"):
-                    tenant.tenant_id_ms = encrypt(result["tenant_id"])
-                if result.get("client_id"):
-                    tenant.client_id = encrypt(result["client_id"])
-                if result.get("client_secret"):
-                    tenant.client_secret = encrypt(result["client_secret"])
-                if result.get("cert_password"):
-                    tenant.cert_password = encrypt(result["cert_password"])
-                if result.get("pfx_bytes"):
-                    tenant.cert_pfx = encrypt_bytes(result["pfx_bytes"])
-                if result.get("mfa_secret"):
-                    tenant.mfa_secret = encrypt(result["mfa_secret"])
-                if result.get("admin_password"):
-                    tenant.admin_password = encrypt(result["admin_password"])
-                tenant.status = "complete"
-                tenant.current_step = None
-                tenant.completed_at = datetime.now(timezone.utc)
-                db.commit()
+        for _db_attempt in range(2):
+            try:
+                with Session(sync_engine) as db:
+                    tenant = db.get(Tenant, tenant_id)
+                    if tenant:
+                        if result.get("tenant_id"):
+                            tenant.tenant_id_ms = encrypt(result["tenant_id"])
+                        if result.get("client_id"):
+                            tenant.client_id = encrypt(result["client_id"])
+                        if result.get("client_secret"):
+                            tenant.client_secret = encrypt(result["client_secret"])
+                        if result.get("cert_password"):
+                            tenant.cert_password = encrypt(result["cert_password"])
+                        if result.get("pfx_bytes"):
+                            tenant.cert_pfx = encrypt_bytes(result["pfx_bytes"])
+                        if result.get("mfa_secret"):
+                            tenant.mfa_secret = encrypt(result["mfa_secret"])
+                        if result.get("admin_password"):
+                            tenant.admin_password = encrypt(result["admin_password"])
+                        tenant.status = "complete"
+                        tenant.current_step = None
+                        tenant.completed_at = datetime.now(timezone.utc)
+                        db.commit()
+                break
+            except Exception as db_err:
+                if _db_attempt == 0:
+                    logger.warning(f"Completion DB write failed for tenant {tenant_id}, retrying in 1s: {db_err}")
+                    import time
+                    time.sleep(1)
+                else:
+                    raise
 
         _publish_progress(tenant_id, total, total, "Setup complete", "complete")
         return {"status": "complete", "tenant_id": tenant_id}

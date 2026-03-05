@@ -126,7 +126,7 @@ def _load_tenant_data(tenant_id: str) -> dict:
             from app.services.graph_client import MicrosoftGraphClient
             try:
                 g = MicrosoftGraphClient(data["tenant_id"], data["client_id"], data["client_secret"])
-                resp = g.get("/organization?$select=verifiedDomains")
+                resp = g.get("/organization?$select=verifiedDomains", timeout=60)
                 for org in resp.json().get("value", []):
                     for d in org.get("verifiedDomains", []):
                         if d.get("isInitial") and d["name"].endswith(".onmicrosoft.com"):
@@ -203,7 +203,7 @@ def run_mailbox_pipeline(self, job_id: str):
         current_step = 1
         _publish_progress(job_id, 1, "Assign License")
         try:
-            resp = graph.get("/subscribedSkus")
+            resp = graph.get("/subscribedSkus", timeout=60)
             skus = resp.json().get("value", [])
             target_sku = None
             for sku in skus:
@@ -576,6 +576,21 @@ def run_mailbox_pipeline(self, job_id: str):
             smtp_succeeded, smtp_failed = _parse_ps_markers(smtp_stdout, ["ENABLED:"])
             enabled_emails = smtp_succeeded["ENABLED:"]
 
+            # Retry failed SMTP enables once after 5s
+            if smtp_failed:
+                failed_smtp_emails = {email.lower() for email, _ in smtp_failed}
+                retry_smtp_cmds = [cmd for cmd, mb in zip(smtp_commands, identities)
+                                   if mb["email"].lower() in failed_smtp_emails]
+                if retry_smtp_cmds:
+                    logger.info(f"Step 8: retrying {len(retry_smtp_cmds)} failed SMTP enables after 5s")
+                    time.sleep(5)
+                    retry_stdout, _ = ps.run_batched(retry_smtp_cmds, batch_size=10, timeout=600)
+                    retry_succ, retry_fail = _parse_ps_markers(retry_stdout, ["ENABLED:"])
+                    enabled_emails = enabled_emails | retry_succ["ENABLED:"]
+                    # Only keep failures that failed on both attempts
+                    smtp_failed = [(e, r) for e, r in retry_fail
+                                   if e.lower() not in enabled_emails]
+
             with Session(sync_engine) as db:
                 for mb in identities:
                     if mb["email"].lower() not in enabled_emails:
@@ -621,6 +636,20 @@ def run_mailbox_pipeline(self, job_id: str):
             cal_succeeded, cal_failed = _parse_ps_markers(cal_stdout, ["CONFIGURED:"])
             configured_emails = cal_succeeded["CONFIGURED:"]
 
+            # Retry failed calendar configs once after 5s
+            if cal_failed:
+                failed_cal_emails = {email.lower() for email, _ in cal_failed}
+                retry_cal_cmds = [cmd for cmd, mb in zip(cal_commands, identities)
+                                  if mb["email"].lower() in failed_cal_emails]
+                if retry_cal_cmds:
+                    logger.info(f"Step 9: retrying {len(retry_cal_cmds)} failed calendar configs after 5s")
+                    time.sleep(5)
+                    retry_stdout, _ = ps.run_batched(retry_cal_cmds, batch_size=10, timeout=600)
+                    retry_succ, retry_fail = _parse_ps_markers(retry_stdout, ["CONFIGURED:"])
+                    configured_emails = configured_emails | retry_succ["CONFIGURED:"]
+                    cal_failed = [(e, r) for e, r in retry_fail
+                                  if e.lower() not in configured_emails]
+
             cal_detail = f"Configured: {len(configured_emails)}, Failed: {len(cal_failed)}"
             if cal_failed:
                 cal_detail += "\n" + "\n".join(f"  {email} - {reason}" for email, reason in cal_failed[:20])
@@ -636,13 +665,22 @@ def run_mailbox_pipeline(self, job_id: str):
             logger.warning(f"Step 9 calendar warning: {e}")
 
         # ── Complete ────────────────────────────────────────────
-        with Session(sync_engine) as db:
-            job = db.get(MailboxJob, job_id)
-            if job:
-                job.status = "complete"
-                job.current_phase = None
-                job.completed_at = datetime.now(timezone.utc)
-                db.commit()
+        for _db_attempt in range(2):
+            try:
+                with Session(sync_engine) as db:
+                    job = db.get(MailboxJob, job_id)
+                    if job:
+                        job.status = "complete"
+                        job.current_phase = None
+                        job.completed_at = datetime.now(timezone.utc)
+                        db.commit()
+                break
+            except Exception as db_err:
+                if _db_attempt == 0:
+                    logger.warning(f"Completion DB write failed for job {job_id}, retrying in 1s: {db_err}")
+                    time.sleep(1)
+                else:
+                    raise
 
         _publish_progress(job_id, len(STEPS), "Pipeline complete", "complete")
         return {"status": "complete", "job_id": job_id}

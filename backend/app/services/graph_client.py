@@ -57,21 +57,21 @@ class MicrosoftGraphClient:
             raise RuntimeError(f"Graph API {method} {url} -> {resp.status_code}: {resp.text}")
         return resp
 
-    def get(self, path: str, beta: bool = False) -> requests.Response:
+    def get(self, path: str, beta: bool = False, timeout: int = 30) -> requests.Response:
         base = GRAPH_BETA_URL if beta else GRAPH_URL
-        return self._request("GET", f"{base}{path}")
+        return self._request("GET", f"{base}{path}", timeout=timeout)
 
-    def post(self, path: str, json_data: dict = None, beta: bool = False) -> requests.Response:
+    def post(self, path: str, json_data: dict = None, beta: bool = False, timeout: int = 30) -> requests.Response:
         base = GRAPH_BETA_URL if beta else GRAPH_URL
-        return self._request("POST", f"{base}{path}", json=json_data)
+        return self._request("POST", f"{base}{path}", json=json_data, timeout=timeout)
 
-    def patch(self, path: str, json_data: dict = None, beta: bool = False) -> requests.Response:
+    def patch(self, path: str, json_data: dict = None, beta: bool = False, timeout: int = 30) -> requests.Response:
         base = GRAPH_BETA_URL if beta else GRAPH_URL
-        return self._request("PATCH", f"{base}{path}", json=json_data)
+        return self._request("PATCH", f"{base}{path}", json=json_data, timeout=timeout)
 
-    def delete(self, path: str, beta: bool = False) -> requests.Response:
+    def delete(self, path: str, beta: bool = False, timeout: int = 30) -> requests.Response:
         base = GRAPH_BETA_URL if beta else GRAPH_URL
-        return self._request("DELETE", f"{base}{path}")
+        return self._request("DELETE", f"{base}{path}", timeout=timeout)
 
     def raw_request(self, method: str, url: str, **kwargs) -> requests.Response:
         """Make a request that doesn't auto-raise on error status."""
