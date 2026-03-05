@@ -412,7 +412,7 @@ def run_mailbox_pipeline(self, job_id: str):
             domain_ready = False
             probe_alias = f"_probe-{domain.split('.')[0]}"
             probe_email = f"{probe_alias}@{domain}"
-            backoff_waits = [0, 15, 30, 60, 120, 120, 120]  # up to ~8 min total
+            backoff_waits = [0, 15, 30, 60, 120, 120, 120, 120, 120]  # up to ~12 min total
             for wait_secs in backoff_waits:
                 if wait_secs:
                     logger.info(f"Domain {domain} not ready for mailboxes yet, waiting {wait_secs}s...")
