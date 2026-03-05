@@ -412,7 +412,9 @@ def run_mailbox_pipeline(self, job_id: str):
             commands = []
             for mb in identities:
                 safe_pwd = escape_ps_string(mb["password"])
-                unique_name = escape_ps_string(f"{mb['display_name']} ({domain_tag})")
+                # For custom names, use alias in Name to avoid duplicates (same display_name, many aliases)
+                name_label = mb['alias'] if custom_names else mb['display_name']
+                unique_name = escape_ps_string(f"{name_label} ({domain_tag})")
                 safe_alias = escape_ps_string(f"{mb['alias']}-{domain_tag}")
                 commands.append(
                     f"$pwd = ConvertTo-SecureString '{safe_pwd}' -AsPlainText -Force; "
@@ -868,6 +870,7 @@ def retry_missing_mailboxes(self, job_id: str):
 
             tenant_id = str(job.tenant_id)
             domain = job.domain
+            is_custom_names = job.custom_names is not None
 
             db_mailboxes = db.execute(
                 select(Mailbox).where(Mailbox.tenant_id == tenant_id, Mailbox.email.like(f"%@{domain}"))
@@ -938,7 +941,8 @@ def retry_missing_mailboxes(self, job_id: str):
         missing_list = [db_map[e] for e in sorted(missing_emails)]
         for mb in missing_list:
             safe_pwd = escape_ps_string(mb["password"])
-            unique_name = escape_ps_string(f"{mb['display_name']} ({domain_tag})")
+            name_label = mb['alias'] if is_custom_names else mb['display_name']
+            unique_name = escape_ps_string(f"{name_label} ({domain_tag})")
             safe_alias = escape_ps_string(mb["alias"] + "-" + domain_tag)
             create_cmds.append(
                 f"$pwd = ConvertTo-SecureString '{safe_pwd}' -AsPlainText -Force; "
