@@ -634,18 +634,31 @@ export default function MailboxesPage() {
                         )}
                         {(j.status === "complete" || j.status === "failed") && (
                           <>
-                            {healthLoading.has(j.id) ? (
-                              <span className="p-1" title="Checking mailboxes...">
-                                <Loader2 size={16} className="text-pink-500 animate-spin" />
-                              </span>
-                            ) : (
-                              <button
-                                onClick={() => handleHealthCheck(j.id)}
-                                className="p-1 hover:bg-pink-50 rounded" title="Health check mailboxes"
-                              >
-                                <HeartPulse size={16} className="text-pink-500" />
-                              </button>
-                            )}
+                            {(() => {
+                              const hr = healthResults[j.id];
+                              const hasIssues = hr?.status === "complete" && ((hr.missing?.length ?? 0) > 0 || (hr.smtp_failed?.length ?? 0) > 0);
+                              const isHealthy = hr?.status === "complete" && !hasIssues;
+                              const isError = hr?.status === "error";
+                              const color = isHealthy ? "text-green-500" : (hasIssues || isError) ? "text-red-500" : "text-pink-500";
+                              const hoverBg = isHealthy ? "hover:bg-green-50" : (hasIssues || isError) ? "hover:bg-red-50" : "hover:bg-pink-50";
+                              const title = isHealthy ? "All mailboxes healthy" : hasIssues ? `Issues: ${hr!.missing?.length ?? 0} missing, ${hr!.smtp_failed?.length ?? 0} SMTP failed` : isError ? `Error: ${hr!.error}` : "Health check mailboxes";
+
+                              if (healthLoading.has(j.id)) {
+                                return (
+                                  <span className="p-1" title="Checking mailboxes...">
+                                    <Loader2 size={16} className="text-pink-500 animate-spin" />
+                                  </span>
+                                );
+                              }
+                              return (
+                                <button
+                                  onClick={() => handleHealthCheck(j.id)}
+                                  className={`p-1 ${hoverBg} rounded`} title={title}
+                                >
+                                  <HeartPulse size={16} className={color} />
+                                </button>
+                              );
+                            })()}
                             {retryLoading.has(j.id) ? (
                               <span className="p-1" title="Retrying missing mailboxes...">
                                 <Loader2 size={16} className="text-orange-500 animate-spin" />
