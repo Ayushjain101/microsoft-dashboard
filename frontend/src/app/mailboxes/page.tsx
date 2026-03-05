@@ -20,8 +20,10 @@ export default function MailboxesPage() {
   const [count, setCount] = useState(50);
   const [cfEmail, setCfEmail] = useState("");
   const [cfApiKey, setCfApiKey] = useState("");
-  const [nameMode, setNameMode] = useState<"random" | "custom">("random");
-  const [customNamesText, setCustomNamesText] = useState("");
+  const [useCustomNames, setUseCustomNames] = useState(false);
+  const [customNameCount, setCustomNameCount] = useState(3);
+  const [firstNames, setFirstNames] = useState<string[]>([]);
+  const [lastNames, setLastNames] = useState<string[]>([]);
 
   // CSV state
   const [csvFile, setCsvFile] = useState<File | null>(null);
@@ -148,13 +150,20 @@ export default function MailboxesPage() {
     setLoading(true);
     setResult(null);
     try {
-      const customNames = nameMode === "custom"
-        ? customNamesText.split("\n").map(n => n.trim()).filter(Boolean)
-        : undefined;
-      if (nameMode === "custom" && (!customNames || customNames.length === 0)) {
-        alert("Please enter at least one name (First Last) for custom mode");
-        setLoading(false);
-        return;
+      let customNames: string[] | undefined;
+      if (useCustomNames) {
+        const missing = [];
+        for (let i = 0; i < customNameCount; i++) {
+          if (!firstNames[i]?.trim() || !lastNames[i]?.trim()) missing.push(i + 1);
+        }
+        if (missing.length > 0) {
+          alert(`Please fill in both first and last name for row(s): ${missing.join(", ")}`);
+          setLoading(false);
+          return;
+        }
+        customNames = Array.from({ length: customNameCount }, (_, i) =>
+          `${firstNames[i].trim()} ${lastNames[i].trim()}`
+        );
       }
       const items = Array.from(selectedTenants).map(id => ({
         tenant_id: id,
@@ -468,54 +477,86 @@ export default function MailboxesPage() {
                 </div>
               )}
 
-              {/* Name Mode */}
+              {/* Custom Names */}
               <div className="mb-4">
-                <label className="block text-sm font-medium mb-2">Account Names</label>
-                <div className="flex items-center gap-4 mb-2">
-                  <label className="flex items-center gap-1.5 text-sm cursor-pointer">
-                    <input
-                      type="radio"
-                      name="nameMode"
-                      value="random"
-                      checked={nameMode === "random"}
-                      onChange={() => setNameMode("random")}
-                    />
-                    Random Names
-                  </label>
-                  <label className="flex items-center gap-1.5 text-sm cursor-pointer">
-                    <input
-                      type="radio"
-                      name="nameMode"
-                      value="custom"
-                      checked={nameMode === "custom"}
-                      onChange={() => setNameMode("custom")}
-                    />
-                    Custom Names
-                  </label>
-                </div>
-                {nameMode === "custom" && (
-                  <div>
-                    <textarea
-                      value={customNamesText}
-                      onChange={e => setCustomNamesText(e.target.value)}
-                      placeholder={"Enter names, one per line:\nAyush Baldota\nVishwajeet Jadeja"}
-                      rows={4}
-                      className="w-full px-3 py-2 border rounded-lg text-sm font-mono"
-                    />
+                <label className="flex items-center gap-2 text-sm font-medium cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={useCustomNames}
+                    onChange={e => {
+                      setUseCustomNames(e.target.checked);
+                      if (e.target.checked && firstNames.length === 0) {
+                        setFirstNames(Array(customNameCount).fill(""));
+                        setLastNames(Array(customNameCount).fill(""));
+                      }
+                    }}
+                    className="rounded"
+                  />
+                  Custom Names
+                </label>
+                {useCustomNames && (
+                  <div className="mt-3 ml-6">
+                    <div className="flex items-center gap-3 mb-3">
+                      <label className="text-sm text-gray-600">Number of names:</label>
+                      <input
+                        type="number"
+                        min={1}
+                        max={20}
+                        value={customNameCount}
+                        onChange={e => {
+                          const n = Math.max(1, Math.min(20, parseInt(e.target.value) || 1));
+                          setCustomNameCount(n);
+                          setFirstNames(prev => {
+                            const arr = [...prev];
+                            while (arr.length < n) arr.push("");
+                            return arr.slice(0, n);
+                          });
+                          setLastNames(prev => {
+                            const arr = [...prev];
+                            while (arr.length < n) arr.push("");
+                            return arr.slice(0, n);
+                          });
+                        }}
+                        className="w-20 px-2 py-1 border rounded text-sm"
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <div className="grid grid-cols-[2rem_1fr_1fr] gap-2 text-xs font-medium text-gray-500">
+                        <span>#</span>
+                        <span>First Name</span>
+                        <span>Last Name</span>
+                      </div>
+                      {Array.from({ length: customNameCount }, (_, i) => (
+                        <div key={i} className="grid grid-cols-[2rem_1fr_1fr] gap-2 items-center">
+                          <span className="text-xs text-gray-400">{i + 1}</span>
+                          <input
+                            value={firstNames[i] || ""}
+                            onChange={e => setFirstNames(prev => { const n = [...prev]; n[i] = e.target.value; return n; })}
+                            placeholder="e.g. Ayush"
+                            className="px-2 py-1.5 border rounded text-sm"
+                          />
+                          <input
+                            value={lastNames[i] || ""}
+                            onChange={e => setLastNames(prev => { const n = [...prev]; n[i] = e.target.value; return n; })}
+                            placeholder="e.g. Baldota"
+                            className="px-2 py-1.5 border rounded text-sm"
+                          />
+                        </div>
+                      ))}
+                    </div>
                     {(() => {
-                      const names = customNamesText.split("\n").map(n => n.trim()).filter(Boolean);
-                      if (names.length === 0) return null;
-                      const perName = Math.floor(count / names.length);
-                      const remainder = count % names.length;
-                      const allocation = names.map((_, i) => perName + (i < remainder ? 1 : 0));
+                      const filled = Array.from({ length: customNameCount }, (_, i) =>
+                        firstNames[i]?.trim() && lastNames[i]?.trim()
+                      ).filter(Boolean).length;
+                      if (filled === 0) return null;
+                      const perName = Math.floor(count / filled);
+                      const remainder = count % filled;
+                      const allocation = Array.from({ length: filled }, (_, i) => perName + (i < remainder ? 1 : 0));
                       return (
-                        <p className="text-xs text-gray-500 mt-1">
-                          {names.length} name{names.length > 1 ? "s" : ""} &rarr; {allocation.join("/")} mailboxes each
-                          {count > 0 && names.length > count && (
-                            <span className="text-red-500 ml-2">Warning: more names than mailboxes</span>
-                          )}
+                        <p className="text-xs text-gray-500 mt-2">
+                          {filled} name{filled > 1 ? "s" : ""} &rarr; {allocation.join("/")} email variations each = {count} mailboxes
                           {perName > 50 && (
-                            <span className="text-yellow-600 ml-2">Warning: {perName}+ variations per name may exceed limits</span>
+                            <span className="text-yellow-600 ml-2">(high variation count per name)</span>
                           )}
                         </p>
                       );
