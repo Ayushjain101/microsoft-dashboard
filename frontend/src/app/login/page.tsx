@@ -15,7 +15,8 @@ export default function LoginPage() {
     setError("");
     try {
       await api.login(password);
-      router.push("/tenants");
+      // Full page navigation to ensure fresh JS is loaded (not stale cache)
+      window.location.href = "/tenants";
     } catch (err: any) {
       setError(err.message || "Login failed");
     } finally {
