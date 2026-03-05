@@ -412,14 +412,17 @@ def run_mailbox_pipeline(self, job_id: str):
             commands = []
             for mb in identities:
                 safe_pwd = escape_ps_string(mb["password"])
-                # For custom names, use alias in Name to avoid duplicates (same display_name, many aliases)
+                # -Name must be unique in Exchange; for custom names many aliases share a display_name
+                # so use alias in Name. -DisplayName shows the real person name.
                 name_label = mb['alias'] if custom_names else mb['display_name']
                 unique_name = escape_ps_string(f"{name_label} ({domain_tag})")
+                safe_display = escape_ps_string(mb['display_name'])
                 safe_alias = escape_ps_string(f"{mb['alias']}-{domain_tag}")
                 commands.append(
                     f"$pwd = ConvertTo-SecureString '{safe_pwd}' -AsPlainText -Force; "
                     f"try {{ "
                     f"New-Mailbox -Room -Name '{unique_name}' "
+                    f"-DisplayName '{safe_display}' "
                     f"-Alias '{safe_alias}' "
                     f"-PrimarySmtpAddress '{mb['email']}' "
                     f"-EnableRoomMailboxAccount $true "
@@ -943,11 +946,13 @@ def retry_missing_mailboxes(self, job_id: str):
             safe_pwd = escape_ps_string(mb["password"])
             name_label = mb['alias'] if is_custom_names else mb['display_name']
             unique_name = escape_ps_string(f"{name_label} ({domain_tag})")
+            safe_display = escape_ps_string(mb['display_name'])
             safe_alias = escape_ps_string(mb["alias"] + "-" + domain_tag)
             create_cmds.append(
                 f"$pwd = ConvertTo-SecureString '{safe_pwd}' -AsPlainText -Force; "
                 f"try {{ "
                 f"New-Mailbox -Room -Name '{unique_name}' "
+                f"-DisplayName '{safe_display}' "
                 f"-Alias '{safe_alias}' "
                 f"-PrimarySmtpAddress '{mb['email']}' "
                 f"-EnableRoomMailboxAccount $true "
