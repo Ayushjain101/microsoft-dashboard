@@ -21,9 +21,11 @@ _SMART_QUOTES = str.maketrans({
 
 
 def _clean_ps_output(text: str) -> str:
-    """Strip ANSI codes and normalize smart quotes from PowerShell output."""
+    """Strip ANSI codes, normalize smart quotes, and collapse newlines from PowerShell output."""
     text = _ANSI_RE.sub('', text)
     text = text.translate(_SMART_QUOTES)
+    # Collapse newlines to spaces so keyword matching works across line breaks
+    text = re.sub(r'\s+', ' ', text).strip()
     return text
 
 
