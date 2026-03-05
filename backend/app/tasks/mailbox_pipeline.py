@@ -1027,7 +1027,20 @@ def retry_missing_mailboxes(self, job_id: str):
                     f"Write-Host 'FAILED: {email} - ' $_.Exception.Message "
                     f"}}"
                 )
-            ps.run_batched(smtp_cmds, batch_size=10, timeout=600)
+            smtp_stdout, _ = ps.run_batched(smtp_cmds, batch_size=10, timeout=600)
+
+            # Update smtp_enabled in DB for successfully enabled mailboxes
+            smtp_succeeded, _ = _parse_ps_markers(smtp_stdout, ["ENABLED:"])
+            enabled_emails = smtp_succeeded["ENABLED:"]
+            if enabled_emails:
+                with Session(sync_engine) as db:
+                    for email in enabled_emails:
+                        mb = db.execute(
+                            select(Mailbox).where(Mailbox.email == email)
+                        ).scalar_one_or_none()
+                        if mb:
+                            mb.smtp_enabled = True
+                    db.commit()
 
         # Step 4: Disable calendar processing for successfully created mailboxes
         if ok_emails:
