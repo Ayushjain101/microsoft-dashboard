@@ -2,12 +2,12 @@
 import { Fragment, useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { api } from "@/lib/api";
-import { Tenant, WSEvent } from "@/lib/types";
+import { Tenant, TenantDomain, WSEvent } from "@/lib/types";
 import { useWebSocket } from "@/hooks/useWebSocket";
 import SetupProgress from "@/components/tenants/SetupProgress";
 import TenantSetupProgress from "@/components/tenants/TenantSetupProgress";
 import TenantHealthResults from "@/components/tenants/TenantHealthResults";
-import { Plus, Play, RotateCcw, Trash2, Download, ChevronDown, Pencil, X, HeartPulse, Loader2 } from "lucide-react";
+import { Plus, Play, RotateCcw, Trash2, Download, ChevronDown, Pencil, X, HeartPulse, Loader2, Check, XCircle } from "lucide-react";
 
 const STATUS_COLORS: Record<string, string> = {
   pending: "bg-gray-100 text-gray-700",
@@ -115,6 +115,7 @@ export default function TenantsPage() {
   }
   async function handleHealthCheck(id: string) {
     setHealthChecking((prev) => ({ ...prev, [id]: true }));
+    setExpandedId(id);
     try {
       await api.healthCheckTenant(id);
     } catch (e: any) {
@@ -136,6 +137,47 @@ export default function TenantsPage() {
     } finally {
       setEditSaving(false);
     }
+  }
+
+  function renderDomains(domains?: TenantDomain[]) {
+    if (!domains || domains.length === 0) {
+      return <span className="text-xs text-gray-400">No domains</span>;
+    }
+    return (
+      <div className="flex flex-wrap gap-1.5">
+        {domains.map((d) => (
+          <span
+            key={d.domain}
+            className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-gray-100 text-gray-700"
+          >
+            {d.domain}
+            {d.is_verified ? (
+              <Check size={12} className="text-green-600" />
+            ) : (
+              <XCircle size={12} className="text-red-400" />
+            )}
+            {d.dkim_enabled && (
+              <span className="text-[10px] font-semibold text-green-700 bg-green-100 px-1 rounded">DKIM</span>
+            )}
+          </span>
+        ))}
+      </div>
+    );
+  }
+
+  function renderHealthSection(t: Tenant) {
+    if (healthChecking[t.id]) {
+      return (
+        <div className="flex items-center gap-2 text-sm text-purple-600">
+          <Loader2 size={14} className="animate-spin" />
+          Running health check...
+        </div>
+      );
+    }
+    if (t.health_results) {
+      return <TenantHealthResults healthResults={t.health_results} lastHealthCheck={t.last_health_check} />;
+    }
+    return <span className="text-xs text-gray-400">Not run yet</span>;
   }
 
   function renderExpandedContent(t: Tenant) {
@@ -171,7 +213,36 @@ export default function TenantsPage() {
       }
     }
 
-    // Failed/complete tenants with step_results: show the grid
+    // Complete tenants: structured layout with domains, steps, health, timestamps
+    if (t.status === "complete") {
+      return (
+        <div className="space-y-3">
+          <div>
+            <p className="text-xs font-medium text-gray-600 mb-1">Domains</p>
+            {renderDomains(t.domains)}
+          </div>
+          {hasStepResults && (
+            <div>
+              <TenantSetupProgress
+                stepResults={t.step_results}
+                tenantStatus={t.status}
+                currentStep={null}
+              />
+            </div>
+          )}
+          <div className="border-t pt-3">
+            <p className="text-xs font-medium text-gray-600 mb-1">Health Check</p>
+            {renderHealthSection(t)}
+          </div>
+          <div className="text-xs text-gray-400">
+            Created: {new Date(t.created_at).toLocaleString()}
+            {t.completed_at && <> | Completed: {new Date(t.completed_at).toLocaleString()}</>}
+          </div>
+        </div>
+      );
+    }
+
+    // Failed tenants with step_results: show the grid + error
     if (hasStepResults) {
       return (
         <div>
@@ -183,30 +254,6 @@ export default function TenantsPage() {
           {t.error_message && (
             <div className="bg-red-50 p-3 rounded text-sm text-red-700 mt-2">
               <strong>Error:</strong> {t.error_message}
-            </div>
-          )}
-          {t.status === "complete" && t.health_results && (
-            <div className="mt-3 border-t pt-3">
-              <p className="text-xs font-medium text-gray-600 mb-1">Health Check</p>
-              <TenantHealthResults healthResults={t.health_results} lastHealthCheck={t.last_health_check} />
-            </div>
-          )}
-        </div>
-      );
-    }
-
-    // Complete tenants: show health results if available, else basic info
-    if (t.status === "complete") {
-      return (
-        <div>
-          <div className="text-sm text-gray-500">
-            Created: {new Date(t.created_at).toLocaleString()}
-            {t.completed_at && <> | Completed: {new Date(t.completed_at).toLocaleString()}</>}
-          </div>
-          {t.health_results && (
-            <div className="mt-3 border-t pt-3">
-              <p className="text-xs font-medium text-gray-600 mb-1">Health Check</p>
-              <TenantHealthResults healthResults={t.health_results} lastHealthCheck={t.last_health_check} />
             </div>
           )}
         </div>
@@ -315,14 +362,30 @@ export default function TenantsPage() {
             {tenants.map((t) => (
               <Fragment key={t.id}>
                 <tr className="border-t hover:bg-gray-50">
-                  <td className="px-4 py-3 font-medium">{t.name}</td>
+                  <td className="px-4 py-3 font-medium">
+                    <div className="flex items-center gap-2">
+                      <span
+                        className={`inline-block w-2 h-2 rounded-full flex-shrink-0 ${(t.mailbox_count || 0) > 0 ? "bg-green-500" : "bg-gray-300"}`}
+                        title={t.mailbox_count ? `${t.mailbox_count} mailboxes` : "No mailboxes"}
+                      />
+                      {t.name}
+                    </div>
+                  </td>
                   <td className="px-4 py-3 text-gray-600">{t.admin_email}</td>
                   <td className="px-4 py-3">
                     <span className={`px-2 py-1 rounded-full text-xs font-medium ${STATUS_COLORS[t.status] || ""}`}>
                       {t.status}
                     </span>
                   </td>
-                  <td className="px-4 py-3 text-gray-500 text-xs">{t.current_step || "—"}</td>
+                  <td className="px-4 py-3 text-xs max-w-[300px]">
+                    {t.error_message ? (
+                      <span className="text-red-600 truncate block" title={t.error_message}>
+                        {t.error_message.length > 80 ? t.error_message.slice(0, 80) + "…" : t.error_message}
+                      </span>
+                    ) : (
+                      <span className="text-gray-500">{t.current_step || "—"}</span>
+                    )}
+                  </td>
                   <td className="px-4 py-3 text-right">
                     <div className="flex items-center justify-end gap-1">
                       {(t.status === "pending" || t.status === "failed") && (

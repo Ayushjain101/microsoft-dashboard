@@ -4,6 +4,12 @@ export interface HealthCheckResult {
   detail?: string;
 }
 
+export interface TenantDomain {
+  domain: string;
+  is_verified: boolean;
+  dkim_enabled: boolean;
+}
+
 export interface Tenant {
   id: string;
   name: string;
@@ -17,6 +23,7 @@ export interface Tenant {
   created_at: string;
   updated_at: string;
   mailbox_count?: number;
+  domains?: TenantDomain[];
   completed_at: string | null;
   // Detail fields (only on getTenant)
   tenant_id_ms?: string | null;

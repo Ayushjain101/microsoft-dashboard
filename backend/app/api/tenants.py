@@ -13,7 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import check_auth
 from app.database import get_db
-from app.models import Mailbox, Tenant
+from app.models import Domain, Mailbox, Tenant
 from app.services.encryption import encrypt, decrypt
 
 router = APIRouter(prefix="/api/v1/tenants", tags=["tenants"], dependencies=[Depends(check_auth)])
@@ -134,10 +134,24 @@ async def list_tenants(
     count_result = await db.execute(count_q)
     total = count_result.scalar()
 
+    # Fetch domains for all tenants on this page
+    tenant_ids = [t.id for t, _ in rows]
+    domain_map: dict[uuid.UUID, list[dict]] = {}
+    if tenant_ids:
+        domain_q = select(Domain).where(Domain.tenant_id.in_(tenant_ids))
+        domain_result = await db.execute(domain_q)
+        for d in domain_result.scalars().all():
+            domain_map.setdefault(d.tenant_id, []).append({
+                "domain": d.domain,
+                "is_verified": d.is_verified,
+                "dkim_enabled": d.dkim_enabled,
+            })
+
     tenants_out = []
     for tenant, mb_count in rows:
         out = _tenant_to_out(tenant)
         out["mailbox_count"] = mb_count or 0
+        out["domains"] = domain_map.get(tenant.id, [])
         tenants_out.append(out)
 
     return {
