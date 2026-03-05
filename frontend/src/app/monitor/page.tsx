@@ -2,7 +2,7 @@
 import { useEffect, useState } from "react";
 import { api } from "@/lib/api";
 import { Alert } from "@/lib/types";
-import { Activity, AlertTriangle, CheckCircle, XCircle, Bell } from "lucide-react";
+import { Activity, AlertTriangle, CheckCircle, XCircle, Bell, Mail } from "lucide-react";
 
 export default function MonitorPage() {
   const [dashboard, setDashboard] = useState<any>(null);
@@ -23,13 +23,14 @@ export default function MonitorPage() {
 
   const tenantCounts = dashboard?.tenant_counts || {};
   const checkCounts = dashboard?.check_status_counts || {};
+  const mailflowCounts = dashboard?.mailflow_counts || {};
 
   return (
     <div>
       <h1 className="text-2xl font-bold mb-6">Health Monitoring</h1>
 
       {/* Summary cards */}
-      <div className="grid grid-cols-4 gap-4 mb-6">
+      <div className="grid grid-cols-5 gap-4 mb-6">
         <div className="bg-white rounded-lg border p-4">
           <div className="flex items-center gap-2 text-gray-500 text-sm mb-1">
             <Activity size={16} /> Total Mailboxes
@@ -55,6 +56,14 @@ export default function MonitorPage() {
             <Bell size={16} /> Active Alerts
           </div>
           <div className="text-2xl font-bold text-yellow-700">{dashboard?.active_alerts || 0}</div>
+        </div>
+        <div className="bg-white rounded-lg border p-4">
+          <div className="flex items-center gap-2 text-orange-600 text-sm mb-1">
+            <Mail size={16} /> Mailflow Issues
+          </div>
+          <div className="text-2xl font-bold text-orange-700">
+            {(mailflowCounts.critical || 0) + (mailflowCounts.warning || 0)}
+          </div>
         </div>
       </div>
 

@@ -1,6 +1,8 @@
 """Celery tasks: SMTP/DNS/blacklist health checks + Celery Beat scheduled tasks."""
 
+import json
 import logging
+import os
 import smtplib
 import socket
 import time
@@ -18,7 +20,7 @@ from app.tasks.celery_app import celery_app
 from app.websocket import publish_event_sync
 
 logger = logging.getLogger(__name__)
-sync_engine = create_engine(settings.database_url_sync)
+sync_engine = create_engine(settings.database_url_sync, pool_pre_ping=True, pool_recycle=3600)
 
 
 def _save_check(tenant_id: str, mailbox_id: str | None, check_type: str,
@@ -200,12 +202,18 @@ STALE_JOB_MINUTES = 30
 
 @celery_app.task(name="app.tasks.monitor.reap_stale_tasks", queue="monitor")
 def reap_stale_tasks():
-    """Mark tenants/jobs stuck in running/queued state as failed.
+    """Mark tenants/jobs stuck in running/queued state as failed, and re-queue lost tasks.
 
     Runs every 5 minutes via Celery Beat. If a tenant or mailbox job has been
     in running/queued state without an update for longer than the threshold,
-    it's presumed dead (worker crashed, Docker stopped, etc.).
+    it's presumed dead (worker crashed, connection lost, etc.).
+
+    For "queued" tasks that never started (no current_step update), re-dispatches
+    the Celery task instead of marking as failed, to recover from lost messages.
     """
+    from app.tasks.tenant_setup import run_tenant_setup
+    from app.tasks.mailbox_pipeline import run_mailbox_pipeline
+
     now = datetime.now(timezone.utc)
     tenant_cutoff = now - timedelta(minutes=STALE_TENANT_MINUTES)
     job_cutoff = now - timedelta(minutes=STALE_JOB_MINUTES)
@@ -219,7 +227,20 @@ def reap_stale_tasks():
             )
         ).scalars().all()
 
+        requeued_tenants = 0
         for tenant in stale_tenants:
+            # If still "queued" with no progress, the Celery message was likely lost — re-dispatch
+            if tenant.status == "queued":
+                logger.warning(f"Re-queuing lost tenant task: {tenant.name}")
+                tenant.updated_at = now
+                db.commit()
+                try:
+                    run_tenant_setup.delay(str(tenant.id))
+                    requeued_tenants += 1
+                    continue
+                except Exception:
+                    logger.exception(f"Failed to re-queue tenant {tenant.name}")
+
             logger.warning(f"Reaping stale tenant: {tenant.name} (stuck since {tenant.updated_at})")
             tenant.status = "failed"
             tenant.error_message = (
@@ -240,11 +261,23 @@ def reap_stale_tasks():
         stale_jobs = db.execute(
             select(MailboxJob).where(
                 MailboxJob.status.in_(["running", "queued"]),
-                MailboxJob.created_at < job_cutoff,
+                MailboxJob.updated_at < job_cutoff,
             )
         ).scalars().all()
 
+        requeued_jobs = 0
         for job in stale_jobs:
+            if job.status == "queued":
+                logger.warning(f"Re-queuing lost mailbox job: {job.id}")
+                job.updated_at = now
+                db.commit()
+                try:
+                    run_mailbox_pipeline.delay(str(job.id))
+                    requeued_jobs += 1
+                    continue
+                except Exception:
+                    logger.exception(f"Failed to re-queue job {job.id}")
+
             logger.warning(f"Reaping stale mailbox job: {job.id} (stuck since {job.created_at})")
             job.status = "failed"
             job.error_message = (
@@ -262,6 +295,107 @@ def reap_stale_tasks():
 
         if stale_tenants or stale_jobs:
             db.commit()
-            logger.info(f"Reaped {len(stale_tenants)} tenants, {len(stale_jobs)} jobs")
+            logger.info(
+                f"Reaped {len(stale_tenants) - requeued_tenants} tenants, "
+                f"{len(stale_jobs) - requeued_jobs} jobs. "
+                f"Re-queued {requeued_tenants} tenants, {requeued_jobs} jobs."
+            )
         else:
             logger.debug("No stale tasks found")
+
+
+# ── Mailflow monitoring ──────────────────────────────────────────────────
+
+def _parse_mailflow_output(stdout: str) -> dict:
+    """Extract JSON result from PowerShell stdout (banner text may precede it)."""
+    for line in reversed(stdout.strip().splitlines()):
+        line = line.strip()
+        if line.startswith("{"):
+            try:
+                return json.loads(line)
+            except json.JSONDecodeError:
+                continue
+    return {"total": 0, "statuses": {}}
+
+
+@celery_app.task(name="app.tasks.monitor.run_mailflow_check")
+def run_mailflow_check(tenant_id: str):
+    """Run Get-MessageTrace for a tenant and save results. Runs on selenium server."""
+    from app.tasks.mailbox_pipeline import _load_tenant_data
+    from app.services.powershell import PowerShellRunner, check_pwsh_available
+
+    if not check_pwsh_available():
+        logger.warning("pwsh not available, skipping mailflow check")
+        return
+
+    tenant_data = _load_tenant_data(tenant_id)
+    pfx_path = tenant_data.get("cert_pfx_path")
+
+    if not tenant_data.get("client_id") or not tenant_data.get("org_domain"):
+        logger.warning(f"Tenant {tenant_id} missing app registration, skipping mailflow")
+        return
+
+    try:
+        ps = PowerShellRunner(tenant_data)
+        commands = [
+            "$end = Get-Date",
+            "$start = $end.AddHours(-24)",
+            "$traces = Get-MessageTrace -StartDate $start -EndDate $end -PageSize 5000",
+            "$summary = $traces | Group-Object Status | Select-Object Name, Count",
+            "$total = ($traces | Measure-Object).Count",
+            "$result = @{ total = $total; statuses = @{} }",
+            "foreach ($s in $summary) { $result.statuses[$s.Name] = $s.Count }",
+            "$result | ConvertTo-Json -Compress",
+        ]
+        stdout, stderr = ps.run(commands, timeout=120)
+        result = _parse_mailflow_output(stdout)
+
+        total = result.get("total", 0)
+        statuses = result.get("statuses", {})
+        failed = statuses.get("Failed", 0) + statuses.get("FilteredAsSpam", 0)
+
+        if total > 0:
+            fail_pct = failed / total
+            if fail_pct > 0.3:
+                status = "critical"
+            elif fail_pct > 0.1:
+                status = "warning"
+            else:
+                status = "healthy"
+        else:
+            status = "warning"
+
+        _save_check(tenant_id, None, "mailflow", status, json.dumps(result))
+
+        if status == "critical":
+            _create_alert(tenant_id, "mailflow_degraded", "critical",
+                          f"Mailflow degraded: {failed}/{total} messages failed/spam "
+                          f"({int(failed/total*100)}%) in last 24h")
+        elif total == 0:
+            _create_alert(tenant_id, "mailflow_idle", "warning",
+                          f"No messages traced in last 24h for tenant {tenant_data['tenant_name']}")
+
+        logger.info(f"Mailflow check for {tenant_id}: {status} (total={total}, failed={failed})")
+
+    except Exception as e:
+        logger.exception(f"Mailflow check failed for {tenant_id}")
+        _save_check(tenant_id, None, "mailflow", "error", str(e)[:500])
+    finally:
+        if pfx_path and os.path.exists(pfx_path):
+            os.unlink(pfx_path)
+
+
+@celery_app.task(name="app.tasks.monitor.run_mailflow_checks", queue="monitor")
+def run_mailflow_checks():
+    """Celery Beat: dispatch mailflow checks for all complete tenants."""
+    with Session(sync_engine) as db:
+        tenant_ids = [
+            str(tid) for (tid,) in db.execute(
+                select(Tenant.id).where(Tenant.status == "complete")
+            ).all()
+        ]
+
+    for i, tid in enumerate(tenant_ids):
+        run_mailflow_check.apply_async(args=[tid], countdown=i * 30)
+
+    logger.info(f"Dispatched {len(tenant_ids)} mailflow checks")

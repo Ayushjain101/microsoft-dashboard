@@ -22,6 +22,7 @@ celery_app.conf.update(
         "app.tasks.mailbox_pipeline.enable_dkim_task": {"queue": "tenant_setup"},
         "app.tasks.mailbox_pipeline.retry_pending_dkim": {"queue": "tenant_setup"},
         "app.tasks.mailbox_pipeline.*": {"queue": "mailbox"},
+        "app.tasks.monitor.run_mailflow_check": {"queue": "tenant_setup"},
         "app.tasks.monitor.*": {"queue": "monitor"},
     },
     task_default_queue="default",
@@ -38,6 +39,10 @@ celery_app.conf.update(
         "reap-stale-tasks-every-5m": {
             "task": "app.tasks.monitor.reap_stale_tasks",
             "schedule": crontab(minute="*/5"),
+        },
+        "monitor-mailflow-every-2h": {
+            "task": "app.tasks.monitor.run_mailflow_checks",
+            "schedule": crontab(minute=15, hour="*/2"),
         },
         "retry-pending-dkim-every-2h": {
             "task": "app.tasks.mailbox_pipeline.retry_pending_dkim",

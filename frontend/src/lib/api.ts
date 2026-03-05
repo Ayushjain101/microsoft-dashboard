@@ -93,6 +93,7 @@ export const api = {
   dashboard: () => request<any>("/api/v1/monitor/dashboard"),
   tenantHealth: (tenantId: string) => request<any>(`/api/v1/monitor/${tenantId}`),
   triggerCheck: (tenantId: string) => request(`/api/v1/monitor/${tenantId}/check-now`, { method: "POST" }),
+  mailflowHistory: (tenantId: string) => request<any>(`/api/v1/monitor/${tenantId}/mailflow`),
   listAlerts: () => request<{ alerts: any[] }>("/api/v1/monitor/alerts"),
   ackAlert: (id: number) => request(`/api/v1/monitor/alerts/${id}/ack`, { method: "POST" }),
 
