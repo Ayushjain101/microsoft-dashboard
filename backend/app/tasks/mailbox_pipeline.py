@@ -1025,9 +1025,13 @@ def retry_missing_mailboxes(self, job_id: str):
 
 @celery_app.task(name="app.tasks.mailbox_pipeline.fix_security_defaults", queue="tenant_setup")
 def fix_security_defaults(tenant_id: str):
-    """Disable security defaults on a tenant using stored app credentials."""
+    """Disable security defaults and re-enable SMTP auth on a tenant."""
     import requests
-    from app.selenium_worker.security_settings import disable_security_defaults, disable_mfa_registration_campaign
+    from app.selenium_worker.security_settings import (
+        disable_security_defaults as _disable_sd,
+        disable_mfa_registration_campaign,
+        enable_smtp_auth_org,
+    )
 
     try:
         with Session(sync_engine) as db:
@@ -1057,17 +1061,23 @@ def fix_security_defaults(tenant_id: str):
         if not token:
             raise ValueError(f"Failed to get app token: {r.json().get('error_description', 'Unknown error')}")
 
-        # Disable security defaults
-        sd_ok = disable_security_defaults(token)
-        mfa_ok = disable_mfa_registration_campaign(token)
-
         detail_parts = []
-        if sd_ok:
+
+        # 1. Disable security defaults
+        if _disable_sd(token):
             detail_parts.append("Security Defaults disabled")
         else:
             detail_parts.append("Security Defaults: already disabled or failed")
-        if mfa_ok:
+
+        # 2. Disable MFA registration campaign
+        if disable_mfa_registration_campaign(token):
             detail_parts.append("MFA campaign disabled")
+
+        # 3. Enable org-wide SMTP auth
+        if enable_smtp_auth_org(token, tenant_id=ms_tenant_id):
+            detail_parts.append("Org SMTP auth enabled")
+        else:
+            detail_parts.append("Org SMTP auth: failed (may need PowerShell)")
 
         detail = "; ".join(detail_parts)
         result = {"tenant_id": tenant_id, "status": "complete", "detail": detail}

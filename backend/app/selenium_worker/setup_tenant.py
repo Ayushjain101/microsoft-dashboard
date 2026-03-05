@@ -162,16 +162,19 @@ def setup_single_tenant(
         progress(11, "Finalize")
         try:
             logger.info("Retrying security setup with app client credentials...")
-            time.sleep(10)  # Wait for permissions to propagate
+            time.sleep(15)  # Wait for permissions to propagate
             app_token = _get_app_token(tenant_id, client_id, client_secret)
             if app_token:
                 from app.selenium_worker.security_settings import (
                     disable_security_defaults, disable_mfa_registration_campaign,
-                    disable_system_preferred_mfa,
+                    disable_system_preferred_mfa, enable_smtp_auth_org,
                 )
                 disable_security_defaults(app_token)
                 disable_mfa_registration_campaign(app_token)
                 disable_system_preferred_mfa(app_token)
+                enable_smtp_auth_org(app_token, tenant_id=tenant_id, az_path=az_path)
+            else:
+                logger.warning("Could not get app token for security retry")
             record_step(11, "success")
         except Exception as e:
             logger.warning(f"Security retry with app credentials failed: {e}")
