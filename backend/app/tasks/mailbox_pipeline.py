@@ -947,13 +947,6 @@ def retry_missing_mailboxes(self, job_id: str):
                 select(Mailbox).where(Mailbox.tenant_id == tenant_id, Mailbox.email.like(f"%@{domain}"))
             ).scalars().all()
 
-            if not db_mailboxes:
-                publish_event_sync("retry_missing_result", {
-                    "job_id": job_id, "status": "complete", "missing_count": 0,
-                    "created": 0, "failed": 0, "detail": "No mailboxes in DB for this domain",
-                })
-                return {"status": "complete", "created": 0}
-
             db_map = {}
             for mb in db_mailboxes:
                 pwd = None
@@ -986,6 +979,27 @@ def retry_missing_mailboxes(self, job_id: str):
                             "alias": mb["alias"],
                             "password": mb["password"],
                         }
+
+            # For random names jobs with no DB mailboxes (all failed in original run),
+            # generate fresh random identities
+            if not db_map and not job.custom_names and job.mailbox_count > 0:
+                from app.services.name_generator import generate_mailbox_identities
+                tenant_name = db.get(Tenant, job.tenant_id).name if db.get(Tenant, job.tenant_id) else "Tenant"
+                fresh = generate_mailbox_identities(job.mailbox_count, domain, tenant_name)
+                for mb in fresh:
+                    db_map[mb["email"].lower()] = {
+                        "email": mb["email"],
+                        "display_name": mb["display_name"],
+                        "alias": mb["alias"],
+                        "password": mb["password"],
+                    }
+
+            if not db_map:
+                publish_event_sync("retry_missing_result", {
+                    "job_id": job_id, "status": "complete", "missing_count": 0,
+                    "created": 0, "failed": 0, "detail": "No mailboxes to create",
+                })
+                return {"status": "complete", "created": 0}
 
         publish_event_sync("retry_missing_result", {"job_id": job_id, "status": "running"})
 
