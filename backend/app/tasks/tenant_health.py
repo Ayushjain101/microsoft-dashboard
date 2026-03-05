@@ -192,6 +192,12 @@ def run_tenant_health_check(self, tenant_id: str):
         results["8"] = {"status": "warn", "message": HEALTH_CHECKS[7], "detail": str(e)[:500]}
 
     _save_results(tenant_id, results)
+
+    # Sync: if health check 8 (Instantly Consent) passes but setup step 12 is still warning, update it
+    check_8 = results.get("8", {})
+    if check_8.get("status") == "pass":
+        _sync_step_result(tenant_id, step=12, health_status="pass")
+
     return {"status": "complete", "results": results}
 
 
@@ -279,6 +285,33 @@ def fix_tenant_health(self, tenant_id: str):
     run_tenant_health_check.delay(tenant_id)
 
     return {"status": "complete", "detail": detail}
+
+
+def _sync_step_result(tenant_id: str, step: int, health_status: str):
+    """Sync a setup step_result when health check confirms the issue is resolved."""
+    with Session(sync_engine) as db:
+        tenant = db.get(Tenant, tenant_id)
+        if not tenant or not tenant.step_results:
+            return
+        step_key = str(step)
+        step_data = tenant.step_results.get(step_key)
+        if not step_data:
+            return
+        # Only upgrade warning → success, never downgrade success
+        if step_data.get("status") == "warning" and health_status == "pass":
+            updated = dict(tenant.step_results)
+            updated[step_key] = {"status": "success", "message": step_data.get("message", "")}
+            tenant.step_results = updated
+            flag_modified(tenant, "step_results")
+            db.commit()
+            logger.info(f"Synced step {step} from warning→success for tenant {tenant_id}")
+
+            publish_event_sync("tenant_step_result", {
+                "tenant_id": tenant_id,
+                "step": step,
+                "step_status": "success",
+                "message": step_data.get("message", ""),
+            })
 
 
 def _save_results(tenant_id: str, results: dict):
