@@ -406,6 +406,24 @@ def run_mailbox_pipeline(self, job_id: str):
 
             from app.services.powershell import escape_ps_string
 
+            # Wait for Exchange to accept the domain (propagation delay after Azure AD verification)
+            domain_accepted = False
+            for wait in [0, 10, 20, 30, 60, 60]:
+                if wait:
+                    logger.info(f"Waiting {wait}s for Exchange to accept domain {domain}...")
+                    time.sleep(wait)
+                try:
+                    check_out, _ = ps.run([
+                        f"Get-AcceptedDomain -Identity '{domain}' | Select-Object -ExpandProperty DomainName"
+                    ])
+                    if domain.lower() in check_out.lower():
+                        domain_accepted = True
+                        break
+                except RuntimeError:
+                    pass
+            if not domain_accepted:
+                logger.warning(f"Domain {domain} not yet in Exchange accepted domains, proceeding anyway")
+
             # Use domain tag in Name/Alias to avoid conflicts when multiple domains share a tenant
             domain_tag = domain.split(".")[0]
 
@@ -441,11 +459,29 @@ def run_mailbox_pipeline(self, job_id: str):
 
             stdout, _ = ps.run_batched(commands, batch_size=10, timeout=600)
 
-            # Parse PowerShell output markers
+            # If many failures are due to domain not accepted, retry once after waiting
+            succeeded_first, failed_first = _parse_ps_markers(stdout, ["CREATED:", "EXISTS:"])
+            domain_reject_failures = [
+                (email, reason) for email, reason in failed_first
+                if "not an accepted domain" in reason.lower()
+            ]
+            if domain_reject_failures and len(domain_reject_failures) >= len(failed_first) * 0.5:
+                logger.info(f"{len(domain_reject_failures)} mailboxes rejected due to domain not accepted, retrying after 60s...")
+                time.sleep(60)
+                # Rebuild commands only for failed emails
+                failed_emails = {email.lower() for email, _ in domain_reject_failures}
+                retry_commands = [cmd for cmd, mb in zip(commands, identities) if mb["email"].lower() in failed_emails]
+                retry_stdout, _ = ps.run_batched(retry_commands, batch_size=10, timeout=600)
+                # Merge results
+                stdout = stdout + "\n" + retry_stdout
+
+            # Parse PowerShell output markers (merged stdout includes retry output)
             succeeded, failed_list = _parse_ps_markers(stdout, ["CREATED:", "EXISTS:"])
             created_emails = succeeded["CREATED:"]
             exists_emails = succeeded["EXISTS:"]
             ok_emails = created_emails | exists_emails
+            # Remove failures for emails that succeeded on retry
+            failed_list = [(e, r) for e, r in failed_list if e.lower() not in ok_emails]
 
             # Only save mailboxes that actually succeeded
             with Session(sync_engine) as db:
