@@ -853,9 +853,9 @@ def _validate_totp_secret(secret: str) -> bool:
     try:
         padded = secret + "=" * (-len(secret) % 8)
         decoded = base64.b32decode(padded)
-        # Real TOTP secrets are typically 20 bytes (32 chars base32) / 128+ bits.
-        # Reject short matches (< 16 bytes) — these are likely tenant names or words.
-        if len(decoded) < 16:
+        # TOTP secrets need at least 80 bits (10 bytes) per RFC 4226.
+        # Microsoft uses 80-bit or 160-bit secrets depending on account type.
+        if len(decoded) < 10:
             return False
         return True
     except Exception:
