@@ -1049,6 +1049,26 @@ def retry_missing_mailboxes(self, job_id: str):
         if failed_list:
             detail += "\n" + "\n".join(f"  {email} - {reason}" for email, reason in failed_list[:20])
 
+        # Update job step_results to reflect actual mailbox count after retry
+        with Session(sync_engine) as db:
+            job = db.get(MailboxJob, job_id)
+            if job:
+                actual_count = db.execute(
+                    select(Mailbox).where(Mailbox.tenant_id == tenant_id, Mailbox.email.like(f"%@{domain}"))
+                ).scalars().all()
+                total_ok = len(actual_count)
+                total_failed = job.mailbox_count - total_ok
+                step7_detail = f"Created: {total_ok}, Existed: 0, Failed: {total_failed}"
+                if not job.step_results:
+                    job.step_results = {}
+                job.step_results["7"] = {
+                    "status": "success" if total_failed == 0 else "warning",
+                    "message": "",
+                    "detail": step7_detail,
+                }
+                flag_modified(job, "step_results")
+                db.commit()
+
         result = {
             "job_id": job_id,
             "status": "complete",
