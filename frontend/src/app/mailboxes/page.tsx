@@ -26,6 +26,9 @@ export default function MailboxesPage() {
   const [csvCfEmail, setCsvCfEmail] = useState("");
   const [csvCfApiKey, setCsvCfApiKey] = useState("");
 
+  // Job selection for export
+  const [selectedJobTenantIds, setSelectedJobTenantIds] = useState<Set<string>>(new Set());
+
   // Result banner
   const [result, setResult] = useState<BulkMailboxResult | null>(null);
 
@@ -365,12 +368,44 @@ export default function MailboxesPage() {
         </div>
       </div>
 
+      {/* Export Bar */}
+      <div className="flex items-center gap-2 mb-4">
+        <button
+          onClick={() => api.exportAllMailboxesCsv()}
+          className="flex items-center gap-1.5 px-3 py-1.5 text-xs bg-white border rounded-lg hover:bg-gray-50"
+        >
+          <FileDown size={14} /> Export All
+        </button>
+        {selectedJobTenantIds.size > 0 && (
+          <button
+            onClick={() => api.exportAllMailboxesCsv(Array.from(selectedJobTenantIds))}
+            className="flex items-center gap-1.5 px-3 py-1.5 text-xs bg-blue-600 text-white rounded-lg hover:bg-blue-700"
+          >
+            <FileDown size={14} /> Export Selected ({selectedJobTenantIds.size})
+          </button>
+        )}
+      </div>
+
       {/* Jobs list */}
       <div className="bg-white rounded-lg border overflow-hidden">
         <h2 className="font-semibold p-4 border-b">Pipeline Jobs</h2>
         <table className="w-full text-sm">
           <thead className="bg-gray-50">
             <tr>
+              <th className="w-10 px-4 py-3" onClick={(e) => e.stopPropagation()}>
+                <input
+                  type="checkbox"
+                  checked={jobs.length > 0 && selectedJobTenantIds.size === jobs.length}
+                  onChange={(e) => {
+                    if (e.target.checked) {
+                      setSelectedJobTenantIds(new Set(jobs.map(j => j.tenant_id)));
+                    } else {
+                      setSelectedJobTenantIds(new Set());
+                    }
+                  }}
+                  className="rounded"
+                />
+              </th>
               <th className="w-8 px-2 py-3"></th>
               <th className="text-left px-4 py-3">Domain</th>
               <th className="text-left px-4 py-3">Count</th>
@@ -385,6 +420,21 @@ export default function MailboxesPage() {
               return (
                 <tbody key={j.id}>
                   <tr className="border-t hover:bg-gray-50 cursor-pointer" onClick={() => toggleExpanded(j.id)}>
+                    <td className="w-10 px-4 py-3" onClick={(e) => e.stopPropagation()}>
+                      <input
+                        type="checkbox"
+                        checked={selectedJobTenantIds.has(j.tenant_id)}
+                        onChange={(e) => {
+                          setSelectedJobTenantIds(prev => {
+                            const next = new Set(prev);
+                            if (e.target.checked) next.add(j.tenant_id);
+                            else next.delete(j.tenant_id);
+                            return next;
+                          });
+                        }}
+                        className="rounded"
+                      />
+                    </td>
                     <td className="px-2 py-3 text-center">
                       {isExpanded
                         ? <ChevronDown size={14} className="text-gray-400 inline" />
@@ -440,7 +490,7 @@ export default function MailboxesPage() {
                   </tr>
                   {isExpanded && (
                     <tr className="border-t bg-gray-50/50">
-                      <td colSpan={7} className="px-6 py-2">
+                      <td colSpan={8} className="px-6 py-2">
                         <MailboxPipelineProgress
                           stepResults={j.step_results}
                           jobStatus={j.status}
@@ -458,7 +508,7 @@ export default function MailboxesPage() {
               );
             })}
             {jobs.length === 0 && (
-              <tbody><tr><td colSpan={7} className="px-4 py-8 text-center text-gray-400">No jobs yet</td></tr></tbody>
+              <tbody><tr><td colSpan={8} className="px-4 py-8 text-center text-gray-400">No jobs yet</td></tr></tbody>
             )}
         </table>
       </div>
