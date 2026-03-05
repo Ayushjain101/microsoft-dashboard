@@ -66,7 +66,8 @@ def get_exchange_token(az_path: str) -> str:
 
 # ── Device Code Login ──────────────────────────────────────────────────────────
 
-def do_az_login(az_path: str, email: str, password: str, new_password: str = None, mfa_secret: str = None, on_mfa_secret=None) -> dict:
+def do_az_login(az_path: str, email: str, password: str, new_password: str = None,
+                mfa_secret: str = None, on_mfa_secret=None, on_password_changed=None) -> dict:
     logger.info("Starting az login with device code ...")
     full_cmd = f'"{az_path}" login --use-device-code --allow-no-subscriptions'
     proc = subprocess.Popen(
@@ -101,7 +102,9 @@ def do_az_login(az_path: str, email: str, password: str, new_password: str = Non
         raise RuntimeError(f"No device code from az login. Output: {''.join(output_lines)[:300]}")
 
     logger.info(f"Got device code: {device_code}")
-    login_result = _browser_login(email, password, new_password, device_code, mfa_secret=mfa_secret, on_mfa_secret=on_mfa_secret)
+    login_result = _browser_login(email, password, new_password, device_code,
+                                  mfa_secret=mfa_secret, on_mfa_secret=on_mfa_secret,
+                                  on_password_changed=on_password_changed)
 
     logger.info("Waiting for az login to complete ...")
     try:
@@ -117,7 +120,8 @@ def do_az_login(az_path: str, email: str, password: str, new_password: str = Non
     return login_result
 
 
-def _browser_login(email: str, password: str, new_password: str, device_code: str, mfa_secret: str = None, on_mfa_secret=None) -> dict:
+def _browser_login(email: str, password: str, new_password: str, device_code: str,
+                   mfa_secret: str = None, on_mfa_secret=None, on_password_changed=None) -> dict:
     logger.info("Launching Chrome for device code login ...")
     result = {"password_changed": False, "working_password": password}
 
@@ -219,6 +223,12 @@ def _browser_login(email: str, password: str, new_password: str, device_code: st
             actual_new = _handle_password_change(b, password, new_password)
             result["password_changed"] = True
             result["working_password"] = actual_new
+            # Immediately persist new password to DB
+            if on_password_changed:
+                try:
+                    on_password_changed(actual_new)
+                except Exception as e:
+                    logger.error(f"Failed to persist password immediately: {e}")
 
         # MFA detection
         mfa_keywords = [
@@ -250,6 +260,7 @@ def _browser_login(email: str, password: str, new_password: str, device_code: st
         if (mfa_detected or
                 any(kw in page_text for kw in mfa_keywords) or
                 any(kw in current_url for kw in mfa_url_keywords)):
+            logger.info(f"MFA detected. URL: {current_url[:100]}")
             if mfa_secret:
                 # We have a stored MFA secret — use it to answer the OTP prompt
                 logger.info("MFA detected with stored secret — answering OTP prompt directly")
@@ -506,11 +517,26 @@ def _handle_mfa_with_known_secret(b, mfa_secret: str) -> bool:
     if not otp_field:
         otp_field = _mfa_find_otp_input(driver)
 
-    if otp_field:
+    if not otp_field:
+        logger.error(f"Could not find OTP input field. URL: {driver.current_url[:100]}")
+        try:
+            logger.error(f"Page text: {driver.find_element(By.TAG_NAME, 'body').text[:300]}")
+        except Exception:
+            pass
+        return False
+
+    # Try OTP up to 3 times (handles clock skew / timing edge cases)
+    for otp_attempt in range(3):
         otp_code = _mfa_generate_otp(mfa_secret)
         if not otp_code:
             logger.error("Failed to generate OTP from stored secret")
             return False
+
+        otp_field = _mfa_find_otp_input(driver)
+        if not otp_field:
+            logger.error("OTP input field disappeared")
+            return False
+
         otp_field.click()
         time.sleep(0.2)
         otp_field.clear()
@@ -523,33 +549,38 @@ def _handle_mfa_with_known_secret(b, mfa_secret: str) -> bool:
         time.sleep(4)
 
         # Check if OTP was rejected
+        otp_rejected = False
         try:
             error_el = driver.find_element(By.CSS_SELECTOR, "[role='alert'], .error-text, #errorText")
             if error_el.is_displayed() and error_el.text.strip():
-                logger.error(f"Known-secret OTP rejected: {error_el.text.strip()[:100]}")
-                return False
+                logger.warning(f"Known-secret OTP rejected (attempt {otp_attempt + 1}/3): "
+                               f"{error_el.text.strip()[:100]}")
+                otp_rejected = True
         except Exception:
             pass
 
-        # Click through any remaining confirmation pages
-        for _ in range(5):
-            try:
-                page_text = driver.find_element(By.TAG_NAME, "body").text.lower()
-                if "signed in" in page_text or "successfully" in page_text:
-                    break
-            except Exception:
-                break
-            for btn_id in ["idSIButton9", "idBtn_Accept"]:
-                if _mfa_try_click(driver, By.ID, btn_id, timeout=2):
-                    time.sleep(3)
-                    break
-            else:
-                time.sleep(2)
-        logger.info("MFA verification with known secret completed")
-        return True
+        if not otp_rejected:
+            break
     else:
-        logger.error("Could not find OTP input field for known-secret MFA")
+        logger.error("Known-secret OTP rejected 3 times")
         return False
+
+    # Click through any remaining confirmation pages
+    for _ in range(5):
+        try:
+            page_text = driver.find_element(By.TAG_NAME, "body").text.lower()
+            if "signed in" in page_text or "successfully" in page_text:
+                break
+        except Exception:
+            break
+        for btn_id in ["idSIButton9", "idBtn_Accept"]:
+            if _mfa_try_click(driver, By.ID, btn_id, timeout=2):
+                time.sleep(3)
+                break
+        else:
+            time.sleep(2)
+    logger.info("MFA verification with known secret completed")
+    return True
 
 
 def _handle_mfa(b, on_mfa_secret=None):
@@ -570,6 +601,8 @@ def _handle_mfa(b, on_mfa_secret=None):
             time.sleep(3)
             continue
         break
+
+    logger.info(f"After Step A — URL: {driver.current_url[:100]}")
 
     # Step B: Click "Set up a different authentication app"
     diff_app_clicked = False
@@ -611,7 +644,10 @@ def _handle_mfa(b, on_mfa_secret=None):
             break
         time.sleep(3)
 
-    if not diff_app_clicked:
+    if diff_app_clicked:
+        logger.info("Step B: Clicked 'different authentication app'")
+    else:
+        logger.warning("Step B: Could not find 'different app' link — clicking Next")
         _mfa_click_next(driver)
     time.sleep(4)
 
@@ -622,9 +658,12 @@ def _handle_mfa(b, on_mfa_secret=None):
         _mfa_click_next(driver)
     time.sleep(4)
 
-    # Step D: Click "Can't scan the QR code?"
+    logger.info(f"After Step C (QR page) — URL: {driver.current_url[:100]}")
+
+    # Step D: Click "Can't scan the QR code?" — with retry and verification
     cant_scan_clicked = False
     for attempt in range(5):
+        # Try data-testid first (most reliable)
         try:
             btn = driver.find_element(By.CSS_SELECTOR,
                 'button[data-testid="activation-qr-show/hide-info-button"]')
@@ -638,10 +677,20 @@ def _handle_mfa(b, on_mfa_secret=None):
         if cant_scan_clicked:
             break
         time.sleep(2)
+
+    if cant_scan_clicked:
+        logger.info("Step D: Clicked 'Can't scan QR code'")
+    else:
+        logger.warning("Step D: Could NOT click 'Can't scan' — secret text may not be visible")
     time.sleep(3)
 
-    # Step E: Extract secret key
-    saved_secret_key = _mfa_extract_secret(driver)
+    # Step E: Extract secret key (with retry — page may still be rendering)
+    for extract_attempt in range(3):
+        saved_secret_key = _mfa_extract_secret(driver)
+        if saved_secret_key:
+            break
+        logger.info(f"Secret extraction attempt {extract_attempt + 1}/3 failed, waiting 3s...")
+        time.sleep(3)
 
     if saved_secret_key:
         logger.info(f"SECRET KEY: {saved_secret_key[:8]}...{saved_secret_key[-4:]} (len={len(saved_secret_key)})")
@@ -675,90 +724,80 @@ def _handle_mfa(b, on_mfa_secret=None):
 
         otp_verified = False
         if otp_field:
-            otp_code = _mfa_generate_otp(saved_secret_key)
-            if not otp_code:
-                logger.error("Failed to generate OTP on retry")
-                return None
-            otp_field.click()
-            time.sleep(0.2)
-            otp_field.clear()
-            time.sleep(0.1)
-            otp_field.send_keys(otp_code)
-            time.sleep(0.5)
-
-            if not _mfa_try_click(driver, By.ID, "idSubmit_SAOTCC_Continue", timeout=3):
-                _mfa_click_next(driver)
-            time.sleep(4)
-
-            # Check if OTP was rejected
-            otp_error = False
-            try:
-                error_el = driver.find_element(By.CSS_SELECTOR, "[role='alert'], .error-text, #errorText")
-                if error_el.is_displayed() and error_el.text.strip():
-                    logger.warning(f"OTP rejected (attempt 1): {error_el.text.strip()[:100]}")
-                    otp_error = True
-            except Exception:
-                pass
-
-            if otp_error:
-                # Retry with fresh OTP
+            # Try OTP up to 3 times
+            for otp_attempt in range(3):
                 otp_code = _mfa_generate_otp(saved_secret_key)
-                otp_field = _mfa_find_otp_input(driver)
-                if otp_field and otp_code:
-                    otp_field.click()
-                    otp_field.clear()
-                    otp_field.send_keys(otp_code)
-                    time.sleep(0.5)
-                    if not _mfa_try_click(driver, By.ID, "idSubmit_SAOTCC_Continue", timeout=3):
-                        _mfa_click_next(driver)
-                    time.sleep(4)
-                    # Check again
-                    try:
-                        error_el = driver.find_element(By.CSS_SELECTOR, "[role='alert'], .error-text, #errorText")
-                        if error_el.is_displayed() and error_el.text.strip():
-                            logger.error(f"OTP rejected TWICE: {error_el.text.strip()[:100]} — "
-                                         "NOT saving secret to prevent lockout")
-                            saved_secret_key = None
-                        else:
-                            otp_verified = True
-                    except Exception:
-                        otp_verified = True
-                else:
-                    logger.error("Could not retry OTP — NOT saving secret to prevent lockout")
-                    saved_secret_key = None
-            else:
-                otp_verified = True
-
-            if otp_verified:
-                logger.info("OTP verification succeeded")
-                # Step H: Click Done
-                time.sleep(3)
-                for _ in range(5):
-                    for btn_id in ["idSIButton9", "idSubmit_ProofUp_Redirect"]:
-                        if _mfa_try_click(driver, By.ID, btn_id, timeout=2):
-                            time.sleep(3)
-                            break
-                    else:
-                        try:
-                            for btn in driver.find_elements(By.CSS_SELECTOR,
-                                    "button, input[type='submit'], input[type='button']"):
-                                btn_text = (btn.text or btn.get_attribute("value") or "").lower()
-                                if btn.is_displayed() and any(kw in btn_text
-                                        for kw in ["done", "finish", "complete", "ok", "got it"]):
-                                    driver.execute_script("arguments[0].click();", btn)
-                                    time.sleep(3)
-                                    break
-                        except Exception:
-                            pass
-                        time.sleep(2)
-                        continue
+                if not otp_code:
+                    logger.error("Failed to generate OTP")
                     break
+
+                otp_field = _mfa_find_otp_input(driver)
+                if not otp_field:
+                    logger.error("OTP input field disappeared")
+                    break
+
+                otp_field.click()
+                time.sleep(0.2)
+                otp_field.clear()
+                time.sleep(0.1)
+                otp_field.send_keys(otp_code)
+                time.sleep(0.5)
+
+                if not _mfa_try_click(driver, By.ID, "idSubmit_SAOTCC_Continue", timeout=3):
+                    _mfa_click_next(driver)
+                time.sleep(4)
+
+                # Check if OTP was rejected
+                otp_error = False
+                try:
+                    error_el = driver.find_element(By.CSS_SELECTOR,
+                                                   "[role='alert'], .error-text, #errorText")
+                    if error_el.is_displayed() and error_el.text.strip():
+                        logger.warning(f"OTP rejected (attempt {otp_attempt + 1}/3): "
+                                       f"{error_el.text.strip()[:100]}")
+                        otp_error = True
+                except Exception:
+                    pass
+
+                if not otp_error:
+                    otp_verified = True
+                    break
+
+            if not otp_verified:
+                logger.error("OTP rejected 3 times — secret was already persisted to DB, "
+                             "will retry on next run")
+                # Don't null out saved_secret_key — it's already in DB and likely correct
+                # (timing issues resolve on retry)
         else:
-            logger.error("Could not find OTP input field — NOT saving secret to prevent lockout")
-            saved_secret_key = None
+            logger.error("Could not find OTP input field")
+
+        if otp_verified:
+            logger.info("OTP verification succeeded")
+            # Step H: Click Done
+            time.sleep(3)
+            for _ in range(5):
+                for btn_id in ["idSIButton9", "idSubmit_ProofUp_Redirect"]:
+                    if _mfa_try_click(driver, By.ID, btn_id, timeout=2):
+                        time.sleep(3)
+                        break
+                else:
+                    try:
+                        for btn in driver.find_elements(By.CSS_SELECTOR,
+                                "button, input[type='submit'], input[type='button']"):
+                            btn_text = (btn.text or btn.get_attribute("value") or "").lower()
+                            if btn.is_displayed() and any(kw in btn_text
+                                    for kw in ["done", "finish", "complete", "ok", "got it"]):
+                                driver.execute_script("arguments[0].click();", btn)
+                                time.sleep(3)
+                                break
+                    except Exception:
+                        pass
+                    time.sleep(2)
+                    continue
+                break
 
     if not saved_secret_key:
-        logger.warning("No verified secret — waiting for manual MFA completion (120s)...")
+        logger.warning("No secret found — waiting for manual MFA completion (120s)...")
         for _ in range(60):
             time.sleep(2)
             try:
@@ -813,7 +852,8 @@ def _mfa_click_next(driver, timeout=10):
 def _mfa_click_cant_scan(driver):
     link_texts = ["can't scan", "cant scan", "can not scan", "enter code manually",
                   "manual entry", "enter manually", "configure without",
-                  "without scanning", "can't use", "i want to set up a different method"]
+                  "without scanning", "can't use", "i want to set up a different method",
+                  "enter the code", "manually type"]
     for text in link_texts:
         try:
             links = driver.find_elements(By.PARTIAL_LINK_TEXT, text)
@@ -859,7 +899,7 @@ def _mfa_extract_secret(driver):
     try:
         body_text = driver.find_element(By.TAG_NAME, "body").text
         logger.debug(f"MFA page text (first 500 chars): {body_text[:500]}")
-        # Labeled patterns — require "secret key" or "secret" label (not bare "Key"/"Code")
+        # Labeled patterns — require "secret key" or "secret" label
         labeled_patterns = [
             r"(?:Secret\s*(?:key)?)[:\s]+([A-Z2-7]{16,})",
             r"(?:secret\s*key)[=:\s]+([a-zA-Z2-7]{16,})",
@@ -889,13 +929,15 @@ def _mfa_extract_secret(driver):
                     return secret
         # Fallback: scan individual elements for base32 text or input values
         for el in driver.find_elements(By.CSS_SELECTOR,
-                "code, pre, input[type='text'], span[data-testid], div[data-testid]"):
+                "code, pre, input[type='text'], span, div, p, td, label"):
             try:
                 txt = el.text.strip().upper()
-                if txt and len(txt) >= 16 and re.match(r'^[A-Z2-7]+$', txt) and _validate_totp_secret(txt):
+                if txt and 16 <= len(txt) <= 64 and re.match(r'^[A-Z2-7]+$', txt) and _validate_totp_secret(txt):
+                    logger.info(f"Found secret via element scan: <{el.tag_name}> len={len(txt)}")
                     return txt
                 val = (el.get_attribute("value") or "").strip().upper()
-                if val and len(val) >= 16 and re.match(r'^[A-Z2-7]+$', val) and _validate_totp_secret(val):
+                if val and 16 <= len(val) <= 64 and re.match(r'^[A-Z2-7]+$', val) and _validate_totp_secret(val):
+                    logger.info(f"Found secret via element value: <{el.tag_name}> len={len(val)}")
                     return val
             except Exception:
                 continue
@@ -926,7 +968,9 @@ def _mfa_generate_otp(secret_key):
     try:
         totp = pyotp.TOTP(secret)
         remaining = totp.interval - (int(time.time()) % totp.interval)
-        if remaining < 5:
+        # Wait if code is about to expire — generous margin for clock skew
+        if remaining < 8:
+            logger.debug(f"OTP expires in {remaining}s, waiting for fresh code...")
             time.sleep(remaining + 1)
         return totp.now()
     except Exception as e:

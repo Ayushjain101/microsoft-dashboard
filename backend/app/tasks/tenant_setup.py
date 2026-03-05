@@ -120,6 +120,15 @@ def run_tenant_setup(self, tenant_id: str):
                     s.commit()
                     logger.info(f"MFA secret persisted to DB immediately for {tenant_id}")
 
+        def on_password_changed(new_pwd: str):
+            """Persist new password to DB immediately after change — before MFA/further steps."""
+            with Session(sync_engine) as s:
+                t = s.get(Tenant, tenant_id)
+                if t:
+                    t.admin_password = encrypt(new_pwd)
+                    s.commit()
+                    logger.info(f"New password persisted to DB immediately for {tenant_id}")
+
         result = setup_single_tenant(
             email=email,
             password=password,
@@ -128,6 +137,7 @@ def run_tenant_setup(self, tenant_id: str):
             progress_callback=on_progress,
             step_result_callback=on_step_result,
             on_mfa_secret=on_mfa_secret,
+            on_password_changed=on_password_changed,
         )
 
         # Always save partial results (password change, mfa_secret, etc.) even on failure
