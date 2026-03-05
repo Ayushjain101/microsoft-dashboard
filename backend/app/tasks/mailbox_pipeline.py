@@ -406,23 +406,55 @@ def run_mailbox_pipeline(self, job_id: str):
 
             from app.services.powershell import escape_ps_string
 
-            # Wait for Exchange to accept the domain (propagation delay after Azure AD verification)
-            domain_accepted = False
-            for wait in [0, 10, 20, 30, 60, 60]:
-                if wait:
-                    logger.info(f"Waiting {wait}s for Exchange to accept domain {domain}...")
-                    time.sleep(wait)
+            # Wait for Exchange to fully provision the domain for mailbox creation.
+            # Get-AcceptedDomain can return the domain before it's usable for New-Mailbox,
+            # so we test with an actual probe mailbox to be sure.
+            domain_ready = False
+            probe_alias = f"_probe-{domain.split('.')[0]}"
+            probe_email = f"{probe_alias}@{domain}"
+            backoff_waits = [0, 15, 30, 60, 120, 120, 120]  # up to ~8 min total
+            for wait_secs in backoff_waits:
+                if wait_secs:
+                    logger.info(f"Domain {domain} not ready for mailboxes yet, waiting {wait_secs}s...")
+                    _publish_progress(job_id, 7, f"Waiting for Exchange to provision domain ({wait_secs}s)")
+                    time.sleep(wait_secs)
                 try:
-                    check_out, _ = ps.run([
-                        f"Get-AcceptedDomain -Identity '{domain}' | Select-Object -ExpandProperty DomainName"
+                    safe_probe_alias = escape_ps_string(probe_alias)
+                    ps.run([
+                        f"$pwd = ConvertTo-SecureString 'ProbeP@ss1!' -AsPlainText -Force; "
+                        f"New-Mailbox -Room -Name '{safe_probe_alias}' "
+                        f"-Alias '{safe_probe_alias}' "
+                        f"-PrimarySmtpAddress '{probe_email}' "
+                        f"-EnableRoomMailboxAccount $true "
+                        f"-MicrosoftOnlineServicesID '{probe_email}' "
+                        f"-RoomMailboxPassword $pwd"
                     ])
-                    if domain.lower() in check_out.lower():
-                        domain_accepted = True
+                    # Probe succeeded — clean it up and proceed
+                    try:
+                        ps.run([f"Remove-Mailbox -Identity '{probe_email}' -Confirm:$false"])
+                    except RuntimeError:
+                        pass
+                    domain_ready = True
+                    logger.info(f"Domain {domain} is ready for mailbox creation")
+                    break
+                except RuntimeError as e:
+                    if "not an accepted domain" in str(e).lower():
+                        continue  # Domain not ready yet, retry
+                    elif "already exists" in str(e).lower() or "already being used" in str(e).lower():
+                        # Probe from previous run exists — domain works
+                        try:
+                            ps.run([f"Remove-Mailbox -Identity '{probe_email}' -Confirm:$false"])
+                        except RuntimeError:
+                            pass
+                        domain_ready = True
                         break
-                except RuntimeError:
-                    pass
-            if not domain_accepted:
-                logger.warning(f"Domain {domain} not yet in Exchange accepted domains, proceeding anyway")
+                    else:
+                        raise  # Unexpected error
+            if not domain_ready:
+                raise RuntimeError(
+                    f"Domain '{domain}' is not usable for mailbox creation after {sum(backoff_waits)}s. "
+                    f"Exchange Online may need more time to provision the domain. Please retry later."
+                )
 
             # Use domain tag in Name/Alias to avoid conflicts when multiple domains share a tenant
             domain_tag = domain.split(".")[0]
