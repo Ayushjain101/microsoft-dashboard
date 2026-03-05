@@ -844,3 +844,171 @@ def run_mailbox_health_check(self, job_id: str):
     finally:
         if pfx_path and os.path.exists(pfx_path):
             os.unlink(pfx_path)
+
+
+@celery_app.task(name="app.tasks.mailbox_pipeline.retry_missing_mailboxes", bind=True, queue="tenant_setup",
+                 acks_late=True, reject_on_worker_lost=True)
+def retry_missing_mailboxes(self, job_id: str):
+    """Re-create mailboxes that exist in DB but are missing from Exchange, then enable SMTP + disable calendar."""
+    pfx_path = None
+    try:
+        with Session(sync_engine) as db:
+            job = db.get(MailboxJob, job_id)
+            if not job:
+                publish_event_sync("retry_missing_result", {"job_id": job_id, "status": "error", "error": "Job not found"})
+                return {"status": "error"}
+
+            tenant_id = str(job.tenant_id)
+            domain = job.domain
+
+            db_mailboxes = db.execute(
+                select(Mailbox).where(Mailbox.tenant_id == tenant_id, Mailbox.email.like(f"%@{domain}"))
+            ).scalars().all()
+
+            if not db_mailboxes:
+                publish_event_sync("retry_missing_result", {
+                    "job_id": job_id, "status": "complete", "missing_count": 0,
+                    "created": 0, "failed": 0, "detail": "No mailboxes in DB for this domain",
+                })
+                return {"status": "complete", "created": 0}
+
+            db_map = {}
+            for mb in db_mailboxes:
+                pwd = None
+                if mb.password:
+                    try:
+                        pwd = decrypt(mb.password)
+                    except Exception:
+                        pass
+                db_map[mb.email.lower()] = {
+                    "email": mb.email,
+                    "display_name": mb.display_name or mb.email.split("@")[0],
+                    "alias": mb.email.split("@")[0],
+                    "password": pwd or "P@ssw0rd!2024#Rand",
+                }
+
+        publish_event_sync("retry_missing_result", {"job_id": job_id, "status": "running"})
+
+        tenant_data = _load_tenant_data(tenant_id)
+        pfx_path = tenant_data.get("cert_pfx_path")
+
+        from app.services.powershell import PowerShellRunner, check_pwsh_available, escape_ps_string
+        if not check_pwsh_available():
+            raise RuntimeError("PowerShell (pwsh) not available")
+
+        ps = PowerShellRunner(tenant_data)
+
+        # Step 1: Find which mailboxes actually exist in Exchange
+        safe_domain = escape_ps_string(domain)
+        cmd = (
+            f"Get-Mailbox -ResultSize Unlimited -RecipientTypeDetails RoomMailbox "
+            f"| Where-Object {{ $_.PrimarySmtpAddress -like '*@{safe_domain}' }} "
+            f"| ForEach-Object {{ Write-Host \"FOUND: $($_.PrimarySmtpAddress.ToString().ToLower())\" }}"
+        )
+        stdout, _ = ps.run([cmd], timeout=180)
+
+        exchange_emails = set()
+        for line in stdout.splitlines():
+            line = line.strip()
+            if line.startswith("FOUND:"):
+                exchange_emails.add(line[len("FOUND:"):].strip().lower())
+
+        missing_emails = set(db_map.keys()) - exchange_emails
+        if not missing_emails:
+            publish_event_sync("retry_missing_result", {
+                "job_id": job_id, "status": "complete", "missing_count": 0,
+                "created": 0, "failed": 0, "detail": "All mailboxes already exist in Exchange",
+            })
+            return {"status": "complete", "created": 0}
+
+        logger.info(f"Retry job {job_id}: {len(missing_emails)} missing mailboxes to recreate")
+
+        # Step 2: Create missing mailboxes
+        create_cmds = []
+        missing_list = [db_map[e] for e in sorted(missing_emails)]
+        for mb in missing_list:
+            safe_pwd = escape_ps_string(mb["password"])
+            safe_name = escape_ps_string(mb["display_name"])
+            safe_alias = escape_ps_string(mb["alias"])
+            create_cmds.append(
+                f"$pwd = ConvertTo-SecureString '{safe_pwd}' -AsPlainText -Force; "
+                f"try {{ "
+                f"New-Mailbox -Room -Name '{safe_name}' "
+                f"-Alias '{safe_alias}' "
+                f"-PrimarySmtpAddress '{mb['email']}' "
+                f"-EnableRoomMailboxAccount $true "
+                f"-MicrosoftOnlineServicesID '{mb['email']}' "
+                f"-RoomMailboxPassword $pwd; "
+                f"Write-Host 'CREATED: {mb['email']}' "
+                f"}} catch {{ "
+                f"if ($_.Exception.Message -like '*already exists*' -or "
+                f"$_.Exception.Message -like '*proxy address*already being used*') {{ "
+                f"Write-Host 'EXISTS: {mb['email']}' "
+                f"}} else {{ "
+                f"Write-Host 'FAILED: {mb['email']} - ' $_.Exception.Message "
+                f"}} }}"
+            )
+
+        create_stdout, _ = ps.run_batched(create_cmds, batch_size=10, timeout=600)
+        succeeded, failed_list = _parse_ps_markers(create_stdout, ["CREATED:", "EXISTS:"])
+        created_emails = succeeded["CREATED:"]
+        exists_emails = succeeded["EXISTS:"]
+        ok_emails = created_emails | exists_emails
+
+        # Step 3: Enable SMTP for successfully created mailboxes
+        if ok_emails:
+            smtp_cmds = []
+            for email in sorted(ok_emails):
+                smtp_cmds.append(
+                    f"try {{ "
+                    f"Set-CASMailbox -Identity '{email}' -SmtpClientAuthenticationDisabled $false; "
+                    f"Write-Host 'ENABLED: {email}' "
+                    f"}} catch {{ "
+                    f"Write-Host 'FAILED: {email} - ' $_.Exception.Message "
+                    f"}}"
+                )
+            ps.run_batched(smtp_cmds, batch_size=10, timeout=600)
+
+        # Step 4: Disable calendar processing for successfully created mailboxes
+        if ok_emails:
+            cal_cmds = []
+            for email in sorted(ok_emails):
+                cal_cmds.append(
+                    f"try {{ "
+                    f"Set-CalendarProcessing -Identity '{email}' "
+                    f"-AutomateProcessing None -DeleteComments $false -DeleteSubject $false; "
+                    f"Write-Host 'CONFIGURED: {email}' "
+                    f"}} catch {{ "
+                    f"Write-Host 'FAILED: {email} - ' $_.Exception.Message "
+                    f"}}"
+                )
+            ps.run_batched(cal_cmds, batch_size=10, timeout=600)
+
+        # Build result
+        detail = f"Retried {len(missing_emails)} missing mailboxes: Created {len(created_emails)}, Already existed {len(exists_emails)}, Failed {len(failed_list)}"
+        if failed_list:
+            detail += "\n" + "\n".join(f"  {email} - {reason}" for email, reason in failed_list[:20])
+
+        result = {
+            "job_id": job_id,
+            "status": "complete",
+            "missing_count": len(missing_emails),
+            "created": len(created_emails),
+            "existed": len(exists_emails),
+            "failed": len(failed_list),
+            "failed_list": [{"email": e, "error": r} for e, r in failed_list[:20]],
+            "detail": detail,
+        }
+        publish_event_sync("retry_missing_result", result)
+        logger.info(f"Retry job {job_id}: {detail}")
+        return result
+
+    except Exception as e:
+        logger.error(f"Retry missing mailboxes failed for job {job_id}: {e}")
+        publish_event_sync("retry_missing_result", {
+            "job_id": job_id, "status": "error", "error": str(e)[:500],
+        })
+        return {"status": "error", "error": str(e)}
+    finally:
+        if pfx_path and os.path.exists(pfx_path):
+            os.unlink(pfx_path)

@@ -1,9 +1,9 @@
 "use client";
 import { useCallback, useEffect, useState } from "react";
 import { api } from "@/lib/api";
-import { Tenant, MailboxJob, WSEvent, BulkMailboxResult, MailboxHealthResult } from "@/lib/types";
+import { Tenant, MailboxJob, WSEvent, BulkMailboxResult, MailboxHealthResult, RetryMissingResult } from "@/lib/types";
 import { useWebSocket } from "@/hooks/useWebSocket";
-import { Plus, StopCircle, Download, ChevronDown, ChevronRight, Shield, ShieldCheck, Loader2, Upload, FileDown, HeartPulse } from "lucide-react";
+import { Plus, StopCircle, Download, ChevronDown, ChevronRight, Shield, ShieldCheck, Loader2, Upload, FileDown, HeartPulse, RefreshCw } from "lucide-react";
 import MailboxPipelineProgress from "@/components/mailboxes/MailboxPipelineProgress";
 
 export default function MailboxesPage() {
@@ -32,6 +32,10 @@ export default function MailboxesPage() {
   // Health check state
   const [healthLoading, setHealthLoading] = useState<Set<string>>(new Set());
   const [healthResults, setHealthResults] = useState<Record<string, MailboxHealthResult>>({});
+
+  // Retry missing state
+  const [retryLoading, setRetryLoading] = useState<Set<string>>(new Set());
+  const [retryResults, setRetryResults] = useState<Record<string, RetryMissingResult>>({});
 
   // Result banner
   const [result, setResult] = useState<BulkMailboxResult | null>(null);
@@ -71,6 +75,17 @@ export default function MailboxesPage() {
       } else {
         setHealthLoading(prev => { const n = new Set(prev); n.delete(event.job_id!); return n; });
         setHealthResults(prev => ({ ...prev, [event.job_id!]: r }));
+      }
+    }
+    if (event.type === "retry_missing_result" && event.job_id) {
+      const r = event as unknown as RetryMissingResult;
+      if (r.status === "running") {
+        setRetryLoading(prev => new Set(prev).add(event.job_id!));
+      } else {
+        setRetryLoading(prev => { const n = new Set(prev); n.delete(event.job_id!); return n; });
+        setRetryResults(prev => ({ ...prev, [event.job_id!]: r }));
+        // Clear old health results since they're stale now
+        setHealthResults(prev => { const n = { ...prev }; delete n[event.job_id!]; return n; });
       }
     }
     if (event.type === "dkim_enabled" && event.job_id) {
@@ -177,6 +192,16 @@ export default function MailboxesPage() {
     }
   }
 
+  async function handleRetryMissing(jobId: string) {
+    setRetryLoading(prev => new Set(prev).add(jobId));
+    try {
+      await api.retryMissingMailboxes(jobId);
+    } catch (err: any) {
+      setRetryLoading(prev => { const n = new Set(prev); n.delete(jobId); return n; });
+      alert(err.message);
+    }
+  }
+
   async function handleExport(tenantId: string) {
     window.open(`/api/v1/mailboxes/${tenantId}/export`, "_blank");
   }
@@ -238,6 +263,39 @@ export default function MailboxesPage() {
             {r.smtp_failed!.map((f, i) => (
               <span key={i} className="font-mono">{f.email}{i < r.smtp_failed!.length - 1 ? ", " : ""}</span>
             ))}
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  function RetryResultBanner({ result: r }: { result: RetryMissingResult }) {
+    if (r.status === "error") {
+      return (
+        <div className="mt-2 p-3 bg-red-50 border border-red-200 rounded text-xs text-red-700">
+          <span className="font-medium">Retry error:</span> {r.error}
+        </div>
+      );
+    }
+    if (r.status !== "complete") return null;
+
+    const allGood = (r.failed ?? 0) === 0;
+    const bgColor = allGood ? "bg-blue-50 border-blue-200" : "bg-orange-50 border-orange-200";
+    const textColor = allGood ? "text-blue-800" : "text-orange-800";
+
+    return (
+      <div className={`mt-2 p-3 ${bgColor} border rounded text-xs ${textColor}`}>
+        <div className="flex items-center gap-4">
+          <span className="font-medium">Retry complete</span>
+          <span>Missing: {r.missing_count}</span>
+          <span>Created: {r.created ?? 0}</span>
+          {(r.existed ?? 0) > 0 && <span>Already existed: {r.existed}</span>}
+          {(r.failed ?? 0) > 0 && <span className="text-red-600 font-medium">Failed: {r.failed}</span>}
+        </div>
+        {(r.failed_list?.length ?? 0) > 0 && (
+          <div className="mt-1">
+            <span className="font-medium text-red-700">Failed:</span>{" "}
+            <span className="font-mono">{r.failed_list!.map(f => f.email).slice(0, 10).join(", ")}</span>
           </div>
         )}
       </div>
@@ -562,6 +620,18 @@ export default function MailboxesPage() {
                                 <HeartPulse size={16} className="text-pink-500" />
                               </button>
                             )}
+                            {retryLoading.has(j.id) ? (
+                              <span className="p-1" title="Retrying missing mailboxes...">
+                                <Loader2 size={16} className="text-orange-500 animate-spin" />
+                              </span>
+                            ) : (
+                              <button
+                                onClick={() => handleRetryMissing(j.id)}
+                                className="p-1 hover:bg-orange-50 rounded" title="Retry missing mailboxes"
+                              >
+                                <RefreshCw size={16} className="text-orange-500" />
+                              </button>
+                            )}
                             {j.status === "complete" && (
                               <>
                                 {j.dkim_enabled ? (
@@ -603,6 +673,9 @@ export default function MailboxesPage() {
                         />
                         {healthResults[j.id] && (
                           <HealthCheckBanner result={healthResults[j.id]} />
+                        )}
+                        {retryResults[j.id] && (
+                          <RetryResultBanner result={retryResults[j.id]} />
                         )}
                         {j.error_message && (
                           <div className="mt-2 p-3 bg-red-50 rounded text-xs text-red-700 font-mono whitespace-pre-wrap max-h-40 overflow-auto">

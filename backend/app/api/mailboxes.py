@@ -412,6 +412,19 @@ async def health_check_mailboxes(job_id: uuid.UUID, db: AsyncSession = Depends(g
     return {"status": "queued"}
 
 
+@jobs_router.post("/{job_id}/retry-missing")
+async def retry_missing_mailboxes(job_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
+    job = await db.get(MailboxJob, job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    if job.status not in ("complete", "failed"):
+        raise HTTPException(status_code=409, detail="Job must be complete or failed to retry missing")
+
+    from app.tasks.mailbox_pipeline import retry_missing_mailboxes as retry_task
+    retry_task.delay(str(job.id))
+    return {"status": "queued"}
+
+
 @jobs_router.post("/{job_id}/enable-dkim")
 async def enable_dkim(job_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
     job = await db.get(MailboxJob, job_id)

@@ -105,6 +105,18 @@ export interface MailboxHealthResult {
   error?: string;
 }
 
+export interface RetryMissingResult {
+  job_id: string;
+  status: "running" | "complete" | "error";
+  missing_count?: number;
+  created?: number;
+  existed?: number;
+  failed?: number;
+  failed_list?: { email: string; error: string }[];
+  detail?: string;
+  error?: string;
+}
+
 export interface Alert {
   id: number;
   tenant_id: string;
