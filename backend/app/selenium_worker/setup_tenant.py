@@ -35,23 +35,37 @@ def setup_single_tenant(
     skip_login: bool = False,
     app_name: str = None,
     progress_callback=None,
+    step_result_callback=None,
     default_new_password: str = "Atoz12345@!",
 ) -> dict:
     """Run the full setup flow for one tenant.
 
     Args:
         progress_callback: callable(step: int, message: str) for progress updates
+        step_result_callback: callable(step: int, status: str, detail: str|None) for step results
     """
     def progress(step, msg):
         logger.info(f"[Step {step}/13] {msg}")
         if progress_callback:
             progress_callback(step, msg)
 
+    def record_step(step, status, detail=None):
+        if step_result_callback:
+            step_result_callback(step, status, detail)
+
     if not new_password:
         new_password = default_new_password
 
     tenant_name = tenant_name_from_email(email)
     result = {"admin_email": email, "admin_password": password, "status": "started"}
+
+    # Map step labels to numbers for failed_step tracking
+    STEP_MAP = {
+        "init": 0, "login": 1, "get_token": 1, "security": 2, "create_app": 3,
+        "create_sp": 4, "create_secret": 5, "certificate": 6, "permissions": 7,
+        "consent": 8, "exchange_role": 9, "save": 10, "post_save": 11,
+        "instantly_consent": 12, "delete_mfa": 13,
+    }
 
     step = "init"
     try:
@@ -70,6 +84,7 @@ def setup_single_tenant(
                 result["mfa_secret"] = login_result["mfa_secret"]
         else:
             logger.info("Step 1: Skipped (using existing az session)")
+        record_step(1, "success")
 
         # Validate login & get token
         step = "get_token"
@@ -81,6 +96,7 @@ def setup_single_tenant(
         step = "security"
         progress(2, "Security Setup")
         run_all_security_setup(token, tenant_id=tenant_id, az_path=az_path)
+        record_step(2, "success")
 
         # Step 3: Create App Registration
         step = "create_app"
@@ -88,17 +104,20 @@ def setup_single_tenant(
         name = app_name or f"{tenant_name}-automation"
         app_object_id, client_id = step_create_app(token, name)
         result["client_id"] = client_id
+        record_step(3, "success")
 
         # Step 4: Create Service Principal
         step = "create_sp"
         progress(4, "Create Service Principal")
         app_sp_id = step_create_service_principal(token, client_id)
+        record_step(4, "success")
 
         # Step 5: Create Client Secret
         step = "create_secret"
         progress(5, "Create Client Secret")
         client_secret = step_create_secret(token, app_object_id)
         result["client_secret"] = client_secret
+        record_step(5, "success")
 
         # Step 6: Generate & Upload Certificate
         step = "certificate"
@@ -108,12 +127,14 @@ def setup_single_tenant(
         result["cert_pem_b64"] = cert_data["cert_pem_b64"]
         result["cert_password"] = cert_data["pfx_password"]
         result["pfx_bytes"] = cert_data["pfx_bytes"]
+        record_step(6, "success")
 
         # Step 7: Add Permissions
         step = "permissions"
         progress(7, "Add API Permissions")
         graph_sp_id, graph_roles, graph_scopes, exchange_sp_id, exchange_roles = \
             step_add_permissions(token, app_object_id)
+        record_step(7, "success")
 
         # Step 8: Grant Admin Consent
         step = "consent"
@@ -123,19 +144,20 @@ def setup_single_tenant(
             graph_sp_id, graph_roles, graph_scopes,
             exchange_sp_id, exchange_roles,
         )
+        record_step(8, "success")
 
         # Step 9: Assign Exchange Administrator Role
         step = "exchange_role"
         progress(9, "Assign Exchange Admin Role")
         step_assign_exchange_admin_role(token, app_sp_id)
+        record_step(9, "success")
 
         # Step 10: Save Credentials (no-op — saved to DB by caller)
         step = "save"
         progress(10, "Save Credentials")
+        record_step(10, "success")
 
         # Step 11: Retry security setup with app credentials
-        # The az delegated token (Step 2) often lacks Policy.ReadWrite.ConditionalAccess,
-        # but the app now has it after admin consent (Step 8). Retry with client credentials.
         step = "post_save"
         progress(11, "Finalize")
         try:
@@ -150,8 +172,10 @@ def setup_single_tenant(
                 disable_security_defaults(app_token)
                 disable_mfa_registration_campaign(app_token)
                 disable_system_preferred_mfa(app_token)
+            record_step(11, "success")
         except Exception as e:
             logger.warning(f"Security retry with app credentials failed: {e}")
+            record_step(11, "warning", str(e))
 
         # Step 12: Grant Instantly (third-party) Admin Consent
         step = "instantly_consent"
@@ -160,8 +184,10 @@ def setup_single_tenant(
             _app_token = app_token if app_token else _get_app_token(tenant_id, client_id, client_secret)
             if _app_token:
                 _grant_instantly_consent(_app_token)
+            record_step(12, "success")
         except Exception as e:
             logger.warning(f"Instantly consent failed (non-fatal): {e}")
+            record_step(12, "warning", str(e))
 
         # Step 13: Delete MFA Authenticator
         step = "delete_mfa"
@@ -170,8 +196,10 @@ def setup_single_tenant(
         time.sleep(30)
         try:
             _delete_mfa(tenant_id, client_id, client_secret, email, graph_token=token)
+            record_step(13, "success")
         except Exception as e:
             logger.warning(f"MFA deletion failed: {e}")
+            record_step(13, "warning", str(e))
 
         result["status"] = "complete"
         logger.info(f"SETUP COMPLETE for {tenant_name}")
@@ -179,6 +207,7 @@ def setup_single_tenant(
     except Exception as e:
         result["status"] = f"failed_at_{step}"
         result["error"] = str(e)
+        result["failed_step"] = STEP_MAP.get(step, 0)
         logger.error(f"Failed at step '{step}': {e}")
         traceback.print_exc()
 

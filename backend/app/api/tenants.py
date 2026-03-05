@@ -77,6 +77,9 @@ def _tenant_to_out(t: Tenant) -> dict:
         "status": t.status,
         "current_step": t.current_step,
         "error_message": t.error_message,
+        "step_results": t.step_results,
+        "health_results": t.health_results,
+        "last_health_check": t.last_health_check.isoformat() if t.last_health_check else None,
         "created_at": t.created_at.isoformat() if t.created_at else None,
         "updated_at": t.updated_at.isoformat() if t.updated_at else None,
         "completed_at": t.completed_at.isoformat() if t.completed_at else None,
@@ -259,6 +262,19 @@ async def retry_setup(tenant_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
     await db.commit()
 
     run_tenant_setup.delay(str(tenant.id))
+    return {"status": "queued", "tenant_id": str(tenant.id)}
+
+
+@router.post("/{tenant_id}/health-check")
+async def health_check(tenant_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
+    tenant = await db.get(Tenant, tenant_id)
+    if not tenant:
+        raise HTTPException(status_code=404, detail="Tenant not found")
+    if tenant.status != "complete":
+        raise HTTPException(status_code=409, detail="Health check only available for completed tenants")
+
+    from app.tasks.tenant_health import run_tenant_health_check
+    run_tenant_health_check.delay(str(tenant.id))
     return {"status": "queued", "tenant_id": str(tenant.id)}
 
 

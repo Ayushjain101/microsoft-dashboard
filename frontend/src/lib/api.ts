@@ -46,6 +46,7 @@ export const api = {
   deleteTenant: (id: string) => request(`/api/v1/tenants/${id}`, { method: "DELETE" }),
   setupTenant: (id: string) => request(`/api/v1/tenants/${id}/setup`, { method: "POST" }),
   retryTenant: (id: string) => request(`/api/v1/tenants/${id}/retry`, { method: "POST" }),
+  healthCheckTenant: (id: string) => request<{ status: string }>(`/api/v1/tenants/${id}/health-check`, { method: "POST" }),
   getCredentials: (id: string) => request<any>(`/api/v1/tenants/${id}/credentials`),
 
   // Mailboxes

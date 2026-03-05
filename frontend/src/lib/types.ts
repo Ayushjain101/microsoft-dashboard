@@ -1,3 +1,9 @@
+export interface HealthCheckResult {
+  status: "pass" | "fail" | "warn" | "skip";
+  message: string;
+  detail?: string;
+}
+
 export interface Tenant {
   id: string;
   name: string;
@@ -5,6 +11,9 @@ export interface Tenant {
   status: string;
   current_step: string | null;
   error_message: string | null;
+  step_results: Record<string, StepResult> | null;
+  health_results: Record<string, HealthCheckResult> | null;
+  last_health_check: string | null;
   created_at: string;
   updated_at: string;
   mailbox_count?: number;

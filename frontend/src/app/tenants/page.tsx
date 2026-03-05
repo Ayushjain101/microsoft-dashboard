@@ -5,7 +5,9 @@ import { api } from "@/lib/api";
 import { Tenant, WSEvent } from "@/lib/types";
 import { useWebSocket } from "@/hooks/useWebSocket";
 import SetupProgress from "@/components/tenants/SetupProgress";
-import { Plus, Play, RotateCcw, Trash2, Download, ChevronDown, Pencil, X } from "lucide-react";
+import TenantSetupProgress from "@/components/tenants/TenantSetupProgress";
+import TenantHealthResults from "@/components/tenants/TenantHealthResults";
+import { Plus, Play, RotateCcw, Trash2, Download, ChevronDown, Pencil, X, HeartPulse, Loader2 } from "lucide-react";
 
 const STATUS_COLORS: Record<string, string> = {
   pending: "bg-gray-100 text-gray-700",
@@ -22,6 +24,7 @@ export default function TenantsPage() {
   const [filter, setFilter] = useState("");
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [progress, setProgress] = useState<Record<string, WSEvent>>({});
+  const [healthChecking, setHealthChecking] = useState<Record<string, boolean>>({});
   const refreshTimerRef = useRef<ReturnType<typeof setTimeout>>(undefined);
   const [editingTenant, setEditingTenant] = useState<Tenant | null>(null);
   const [editPassword, setEditPassword] = useState("");
@@ -48,7 +51,6 @@ export default function TenantsPage() {
   const onWsMessage = useCallback((event: WSEvent) => {
     if (event.type === "tenant_setup_progress" && event.tenant_id) {
       setProgress((prev) => ({ ...prev, [event.tenant_id!]: event }));
-      // Update tenant inline from WS data so main row reflects progress
       setTenants((prev) =>
         prev.map((t) =>
           t.id === event.tenant_id
@@ -56,11 +58,36 @@ export default function TenantsPage() {
             : t
         )
       );
-      // Refresh list if status changed
       if (event.status === "complete" || event.status === "failed") {
         if (refreshTimerRef.current) clearTimeout(refreshTimerRef.current);
         refreshTimerRef.current = setTimeout(loadTenants, 1000);
       }
+    }
+    // Handle step result events — update tenant's step_results inline
+    if (event.type === "tenant_step_result" && event.tenant_id) {
+      setTenants((prev) =>
+        prev.map((t) => {
+          if (t.id !== event.tenant_id) return t;
+          const updated = { ...(t.step_results || {}) };
+          updated[String(event.step)] = {
+            status: event.step_status as any,
+            message: event.message || "",
+            detail: event.detail || undefined,
+          };
+          return { ...t, step_results: updated };
+        })
+      );
+    }
+    // Handle health check events
+    if (event.type === "tenant_health_check" && event.tenant_id) {
+      setHealthChecking((prev) => ({ ...prev, [event.tenant_id!]: false }));
+      setTenants((prev) =>
+        prev.map((t) =>
+          t.id === event.tenant_id
+            ? { ...t, health_results: event.health_results, last_health_check: event.last_health_check }
+            : t
+        )
+      );
     }
   }, [loadTenants]);
 
@@ -86,6 +113,15 @@ export default function TenantsPage() {
       URL.revokeObjectURL(url);
     } catch (e: any) { alert(e.message); }
   }
+  async function handleHealthCheck(id: string) {
+    setHealthChecking((prev) => ({ ...prev, [id]: true }));
+    try {
+      await api.healthCheckTenant(id);
+    } catch (e: any) {
+      alert(e.message);
+      setHealthChecking((prev) => ({ ...prev, [id]: false }));
+    }
+  }
 
   async function handleSavePassword() {
     if (!editingTenant || !editPassword.trim()) return;
@@ -100,6 +136,99 @@ export default function TenantsPage() {
     } finally {
       setEditSaving(false);
     }
+  }
+
+  function renderExpandedContent(t: Tenant) {
+    const hasStepResults = t.step_results && Object.keys(t.step_results).length > 0;
+    const isRunning = t.status === "running" || t.status === "queued";
+    const wsProgress = progress[t.id];
+
+    // Running/queued tenants: show step results grid if available, else legacy progress bar
+    if (isRunning) {
+      if (hasStepResults) {
+        return (
+          <div>
+            <TenantSetupProgress
+              stepResults={t.step_results}
+              tenantStatus={t.status}
+              currentStep={wsProgress?.step || null}
+            />
+            {wsProgress && (
+              <p className="text-xs text-gray-500 mt-1">{wsProgress.message}</p>
+            )}
+          </div>
+        );
+      }
+      if (wsProgress) {
+        return (
+          <SetupProgress
+            currentStep={wsProgress.step || 0}
+            totalSteps={wsProgress.total || 13}
+            message={wsProgress.message || ""}
+            status={wsProgress.status || t.status}
+          />
+        );
+      }
+    }
+
+    // Failed/complete tenants with step_results: show the grid
+    if (hasStepResults) {
+      return (
+        <div>
+          <TenantSetupProgress
+            stepResults={t.step_results}
+            tenantStatus={t.status}
+            currentStep={null}
+          />
+          {t.error_message && (
+            <div className="bg-red-50 p-3 rounded text-sm text-red-700 mt-2">
+              <strong>Error:</strong> {t.error_message}
+            </div>
+          )}
+          {t.status === "complete" && t.health_results && (
+            <div className="mt-3 border-t pt-3">
+              <p className="text-xs font-medium text-gray-600 mb-1">Health Check</p>
+              <TenantHealthResults healthResults={t.health_results} lastHealthCheck={t.last_health_check} />
+            </div>
+          )}
+        </div>
+      );
+    }
+
+    // Complete tenants: show health results if available, else basic info
+    if (t.status === "complete") {
+      return (
+        <div>
+          <div className="text-sm text-gray-500">
+            Created: {new Date(t.created_at).toLocaleString()}
+            {t.completed_at && <> | Completed: {new Date(t.completed_at).toLocaleString()}</>}
+          </div>
+          {t.health_results && (
+            <div className="mt-3 border-t pt-3">
+              <p className="text-xs font-medium text-gray-600 mb-1">Health Check</p>
+              <TenantHealthResults healthResults={t.health_results} lastHealthCheck={t.last_health_check} />
+            </div>
+          )}
+        </div>
+      );
+    }
+
+    // Failed without step_results: show error
+    if (t.error_message) {
+      return (
+        <div className="bg-red-50 p-3 rounded text-sm text-red-700">
+          <strong>Error:</strong> {t.error_message}
+        </div>
+      );
+    }
+
+    // Default
+    return (
+      <div className="text-sm text-gray-500">
+        Created: {new Date(t.created_at).toLocaleString()}
+        {t.completed_at && <> | Completed: {new Date(t.completed_at).toLocaleString()}</>}
+      </div>
+    );
   }
 
   return (
@@ -212,9 +341,23 @@ export default function TenantsPage() {
                         </button>
                       )}
                       {t.status === "complete" && (
-                        <button onClick={() => handleDownload(t.id)} className="p-1 hover:bg-green-50 rounded" title="Download Credentials">
-                          <Download size={16} className="text-green-600" />
-                        </button>
+                        <>
+                          <button
+                            onClick={() => handleHealthCheck(t.id)}
+                            disabled={healthChecking[t.id]}
+                            className="p-1 hover:bg-purple-50 rounded disabled:opacity-50"
+                            title="Health Check"
+                          >
+                            {healthChecking[t.id] ? (
+                              <Loader2 size={16} className="text-purple-600 animate-spin" />
+                            ) : (
+                              <HeartPulse size={16} className="text-purple-600" />
+                            )}
+                          </button>
+                          <button onClick={() => handleDownload(t.id)} className="p-1 hover:bg-green-50 rounded" title="Download Credentials">
+                            <Download size={16} className="text-green-600" />
+                          </button>
+                        </>
                       )}
                       <button onClick={() => handleDelete(t.id)} className="p-1 hover:bg-red-50 rounded" title="Delete">
                         <Trash2 size={16} className="text-red-500" />
@@ -231,23 +374,7 @@ export default function TenantsPage() {
                 {expandedId === t.id && (
                   <tr key={`${t.id}-exp`} className="border-t bg-gray-50">
                     <td colSpan={5} className="px-4 py-4">
-                      {(t.status === "running" || t.status === "queued") && progress[t.id] ? (
-                        <SetupProgress
-                          currentStep={progress[t.id].step || 0}
-                          totalSteps={progress[t.id].total || 12}
-                          message={progress[t.id].message || ""}
-                          status={progress[t.id].status || t.status}
-                        />
-                      ) : t.error_message ? (
-                        <div className="bg-red-50 p-3 rounded text-sm text-red-700">
-                          <strong>Error:</strong> {t.error_message}
-                        </div>
-                      ) : (
-                        <div className="text-sm text-gray-500">
-                          Created: {new Date(t.created_at).toLocaleString()}
-                          {t.completed_at && <> | Completed: {new Date(t.completed_at).toLocaleString()}</>}
-                        </div>
-                      )}
+                      {renderExpandedContent(t)}
                     </td>
                   </tr>
                 )}

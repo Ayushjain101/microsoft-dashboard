@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
+from sqlalchemy.orm.attributes import flag_modified
 
 from app.config import settings
 from app.models import Tenant
@@ -13,6 +14,13 @@ from app.tasks.celery_app import celery_app
 from app.websocket import publish_event_sync
 
 sync_engine = create_engine(settings.database_url_sync, pool_pre_ping=True, pool_recycle=3600)
+
+STEPS = [
+    "Browser Login", "Security Setup", "Create App Registration",
+    "Create Service Principal", "Create Client Secret", "Generate Certificate",
+    "Add API Permissions", "Grant Admin Consent", "Assign Exchange Admin Role",
+    "Save Credentials", "Finalize", "Grant Instantly Consent", "Delete MFA Authenticator",
+]
 
 
 def _publish_progress(tenant_id: str, step: int, total: int, message: str, status: str = "running"):
@@ -32,6 +40,27 @@ def _publish_progress(tenant_id: str, step: int, total: int, message: str, statu
             tenant.current_step = f"Step {step}/{total}: {message}"
             tenant.updated_at = datetime.now(timezone.utc)
             db.commit()
+
+
+def _record_step_result(tenant_id: str, step: int, status: str, detail: str | None = None):
+    """Record per-step result in the tenant's step_results JSON column."""
+    with Session(sync_engine) as db:
+        tenant = db.get(Tenant, tenant_id)
+        if not tenant:
+            return
+        results = tenant.step_results or {}
+        entry = {"status": status, "message": STEPS[step - 1]}
+        if detail:
+            entry["detail"] = detail
+        results[str(step)] = entry
+        tenant.step_results = results
+        flag_modified(tenant, "step_results")
+        db.commit()
+
+    publish_event_sync("tenant_step_result", {
+        "tenant_id": tenant_id, "step": step, "step_status": status,
+        "message": STEPS[step - 1], "detail": detail,
+    })
 
 
 @celery_app.task(name="app.tasks.tenant_setup.run_tenant_setup", bind=True, queue="tenant_setup")
@@ -59,6 +88,14 @@ def run_tenant_setup(self, tenant_id: str):
     total = 13
 
     try:
+        # Clear previous step_results on new run
+        with Session(sync_engine) as db:
+            tenant = db.get(Tenant, tenant_id)
+            if tenant:
+                tenant.step_results = {}
+                flag_modified(tenant, "step_results")
+                db.commit()
+
         _publish_progress(tenant_id, 0, total, "Starting setup", "running")
 
         # Import selenium worker modules
@@ -68,12 +105,16 @@ def run_tenant_setup(self, tenant_id: str):
         def on_progress(step: int, message: str):
             _publish_progress(tenant_id, step, total, message)
 
+        def on_step_result(step: int, status: str, detail: str | None = None):
+            _record_step_result(tenant_id, step, status, detail)
+
         result = setup_single_tenant(
             email=email,
             password=password,
             new_password=new_password,
             mfa_secret=mfa_secret,
             progress_callback=on_progress,
+            step_result_callback=on_step_result,
         )
 
         # Always save partial results (password change, mfa_secret, etc.) even on failure
@@ -95,6 +136,10 @@ def run_tenant_setup(self, tenant_id: str):
         # Save results to DB
         if result.get("status") != "complete":
             error_msg = result.get("error", f"Setup failed at: {result.get('status', 'unknown')}")
+            # Record the failed step if we can determine it
+            failed_step = result.get("failed_step")
+            if failed_step:
+                _record_step_result(tenant_id, failed_step, "failed", error_msg[:500])
             with Session(sync_engine) as db:
                 _save_partial_results(result, db)
                 tenant = db.get(Tenant, tenant_id)
