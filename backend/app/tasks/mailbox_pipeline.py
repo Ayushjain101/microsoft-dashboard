@@ -402,15 +402,18 @@ def run_mailbox_pipeline(self, job_id: str):
 
             from app.services.powershell import escape_ps_string
 
+            # Use domain tag in Name/Alias to avoid conflicts when multiple domains share a tenant
+            domain_tag = domain.split(".")[0]
+
             commands = []
             for mb in identities:
                 safe_pwd = escape_ps_string(mb["password"])
-                safe_name = escape_ps_string(mb["display_name"])
-                safe_alias = escape_ps_string(mb["alias"])
+                unique_name = escape_ps_string(f"{mb['display_name']} ({domain_tag})")
+                safe_alias = escape_ps_string(f"{mb['alias']}-{domain_tag}")
                 commands.append(
                     f"$pwd = ConvertTo-SecureString '{safe_pwd}' -AsPlainText -Force; "
                     f"try {{ "
-                    f"New-Mailbox -Room -Name '{safe_name}' "
+                    f"New-Mailbox -Room -Name '{unique_name}' "
                     f"-Alias '{safe_alias}' "
                     f"-PrimarySmtpAddress '{mb['email']}' "
                     f"-EnableRoomMailboxAccount $true "
@@ -419,7 +422,8 @@ def run_mailbox_pipeline(self, job_id: str):
                     f"Write-Host 'CREATED: {mb['email']}' "
                     f"}} catch {{ "
                     f"if ($_.Exception.Message -like '*already exists*' -or "
-                    f"$_.Exception.Message -like '*proxy address*already being used*') {{ "
+                    f"$_.Exception.Message -like '*proxy address*already being used*' -or "
+                    f"$_.Exception.Message -like '*name*already being used*') {{ "
                     f"Write-Host 'EXISTS: {mb['email']}' "
                     f"}} else {{ "
                     f"Write-Host 'FAILED: {mb['email']} - ' $_.Exception.Message "
@@ -924,16 +928,18 @@ def retry_missing_mailboxes(self, job_id: str):
         logger.info(f"Retry job {job_id}: {len(missing_emails)} missing mailboxes to recreate")
 
         # Step 2: Create missing mailboxes
+        # Use email-based Name to avoid "name already in use" conflicts across domains
+        domain_tag = domain.split(".")[0]
         create_cmds = []
         missing_list = [db_map[e] for e in sorted(missing_emails)]
         for mb in missing_list:
             safe_pwd = escape_ps_string(mb["password"])
-            safe_name = escape_ps_string(mb["display_name"])
-            safe_alias = escape_ps_string(mb["alias"])
+            unique_name = escape_ps_string(f"{mb['display_name']} ({domain_tag})")
+            safe_alias = escape_ps_string(mb["alias"] + "-" + domain_tag)
             create_cmds.append(
                 f"$pwd = ConvertTo-SecureString '{safe_pwd}' -AsPlainText -Force; "
                 f"try {{ "
-                f"New-Mailbox -Room -Name '{safe_name}' "
+                f"New-Mailbox -Room -Name '{unique_name}' "
                 f"-Alias '{safe_alias}' "
                 f"-PrimarySmtpAddress '{mb['email']}' "
                 f"-EnableRoomMailboxAccount $true "
@@ -942,7 +948,8 @@ def retry_missing_mailboxes(self, job_id: str):
                 f"Write-Host 'CREATED: {mb['email']}' "
                 f"}} catch {{ "
                 f"if ($_.Exception.Message -like '*already exists*' -or "
-                f"$_.Exception.Message -like '*proxy address*already being used*') {{ "
+                f"$_.Exception.Message -like '*proxy address*already being used*' -or "
+                f"$_.Exception.Message -like '*name*already being used*') {{ "
                 f"Write-Host 'EXISTS: {mb['email']}' "
                 f"}} else {{ "
                 f"Write-Host 'FAILED: {mb['email']} - ' $_.Exception.Message "
