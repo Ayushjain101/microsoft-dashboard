@@ -135,22 +135,18 @@ def run_tenant_health_check(self, tenant_id: str):
     else:
         results["5"] = {"status": "skip", "message": HEALTH_CHECKS[4], "detail": "Skipped — no service principal"}
 
-    # Check 6: Exchange Admin Role
+    # Check 6: Exchange Admin Role (via unified RBAC API)
+    EXCHANGE_ADMIN_ROLE_ID = "29232cdf-9323-42fd-ade2-1d097af3e4de"
     if sp_id:
         try:
-            resp = graph.get("/directoryRoles")
-            roles = resp.json().get("value", [])
-            exchange_role = next((r for r in roles if "Exchange" in r.get("displayName", "") and "Admin" in r.get("displayName", "")), None)
-            if exchange_role:
-                members_resp = graph.get(f"/directoryRoles/{exchange_role['id']}/members")
-                members = members_resp.json().get("value", [])
-                is_member = any(m.get("id") == sp_id for m in members)
-                if is_member:
-                    results["6"] = {"status": "pass", "message": HEALTH_CHECKS[5]}
-                else:
-                    results["6"] = {"status": "fail", "message": HEALTH_CHECKS[5], "detail": "Service principal is not Exchange Admin"}
+            resp = graph.get(
+                f"/roleManagement/directory/roleAssignments?$filter=principalId eq '{sp_id}' and roleDefinitionId eq '{EXCHANGE_ADMIN_ROLE_ID}'"
+            )
+            assignments = resp.json().get("value", [])
+            if assignments:
+                results["6"] = {"status": "pass", "message": HEALTH_CHECKS[5]}
             else:
-                results["6"] = {"status": "fail", "message": HEALTH_CHECKS[5], "detail": "Exchange Administrator role not found"}
+                results["6"] = {"status": "fail", "message": HEALTH_CHECKS[5], "detail": "Service principal is not Exchange Admin"}
         except Exception as e:
             results["6"] = {"status": "fail", "message": HEALTH_CHECKS[5], "detail": str(e)[:500]}
     else:
