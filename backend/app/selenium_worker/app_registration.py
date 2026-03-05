@@ -186,11 +186,16 @@ def step_assign_exchange_admin_role(token, app_sp_id):
         return False
 
 
-def step_upload_certificate(token, app_object_id, cert_pem_b64, thumbprint):
-    now = datetime.now(timezone.utc)
-    start = now.strftime("%Y-%m-%dT%H:%M:%SZ")
-    end = (now + timedelta(days=730)).strftime("%Y-%m-%dT%H:%M:%SZ")
-    logger.info("Uploading certificate ...")
+def step_upload_certificate(token, app_object_id, cert_pem_b64, thumbprint,
+                            not_valid_before=None, not_valid_after=None):
+    if not_valid_before and not_valid_after:
+        start = not_valid_before.strftime("%Y-%m-%dT%H:%M:%SZ")
+        end = not_valid_after.strftime("%Y-%m-%dT%H:%M:%SZ")
+    else:
+        now = datetime.now(timezone.utc)
+        start = now.strftime("%Y-%m-%dT%H:%M:%SZ")
+        end = (now + timedelta(days=730)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    logger.info(f"Uploading certificate (valid {start} to {end}) ...")
     api_patch(token, f"{GRAPH_URL}/applications/{app_object_id}", {
         "keyCredentials": [{
             "type": "AsymmetricX509Cert", "usage": "Verify",

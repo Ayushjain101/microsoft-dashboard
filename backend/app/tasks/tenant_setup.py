@@ -40,7 +40,7 @@ def _publish_progress(tenant_id: str, step: int, total: int, message: str, statu
         tenant = db.get(Tenant, tenant_id)
         if tenant:
             tenant.status = status
-            tenant.current_step = f"Step {step}/{total}: {message}"
+            tenant.current_step = f"Step {step}/{total}: {message}"[:200]
             tenant.updated_at = datetime.now(timezone.utc)
             db.commit()
 

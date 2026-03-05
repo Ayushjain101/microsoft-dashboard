@@ -69,4 +69,6 @@ def generate_cert(tenant_name: str) -> dict:
         "pfx_bytes": pfx_bytes,
         "pfx_password": pfx_password,
         "thumbprint": thumbprint,
+        "not_valid_before": cert.not_valid_before_utc,
+        "not_valid_after": cert.not_valid_after_utc,
     }

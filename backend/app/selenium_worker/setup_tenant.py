@@ -125,7 +125,9 @@ def setup_single_tenant(
         step = "certificate"
         progress(6, "Generate Certificate")
         cert_data = generate_cert(tenant_name)
-        step_upload_certificate(token, app_object_id, cert_data["cert_pem_b64"], cert_data["thumbprint"])
+        step_upload_certificate(token, app_object_id, cert_data["cert_pem_b64"], cert_data["thumbprint"],
+                               not_valid_before=cert_data["not_valid_before"],
+                               not_valid_after=cert_data["not_valid_after"])
         result["cert_pem_b64"] = cert_data["cert_pem_b64"]
         result["cert_password"] = cert_data["pfx_password"]
         result["pfx_bytes"] = cert_data["pfx_bytes"]
