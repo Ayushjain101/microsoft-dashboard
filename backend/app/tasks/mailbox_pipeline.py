@@ -1035,9 +1035,9 @@ def fix_security_defaults(tenant_id: str):
             if not tenant:
                 raise ValueError(f"Tenant {tenant_id} not found")
 
-            ms_tenant_id = decrypt_bytes(tenant.tenant_id_ms) if tenant.tenant_id_ms else None
-            client_id = decrypt_bytes(tenant.client_id) if tenant.client_id else None
-            client_secret = decrypt_bytes(tenant.client_secret) if tenant.client_secret else None
+            ms_tenant_id = decrypt_bytes(tenant.tenant_id_ms).decode() if tenant.tenant_id_ms else None
+            client_id = decrypt_bytes(tenant.client_id).decode() if tenant.client_id else None
+            client_secret = decrypt_bytes(tenant.client_secret).decode() if tenant.client_secret else None
 
             if not all([ms_tenant_id, client_id, client_secret]):
                 raise ValueError("Tenant missing app credentials (tenant_id_ms, client_id, or client_secret)")
