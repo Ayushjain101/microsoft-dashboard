@@ -244,6 +244,54 @@ async def bulk_create_mailboxes_csv(
     return result
 
 
+@router.get("/export-all")
+async def export_all_mailboxes_csv(
+    tenant_ids: str | None = Query(None, description="Comma-separated tenant IDs"),
+    db: AsyncSession = Depends(get_db),
+):
+    """Export mailboxes across all (or selected) tenants as a single CSV."""
+    query = select(Mailbox).order_by(Mailbox.email)
+    if tenant_ids:
+        id_list = [uuid.UUID(i.strip()) for i in tenant_ids.split(",") if i.strip()]
+        query = query.where(Mailbox.tenant_id.in_(id_list))
+
+    result = await db.execute(query)
+    mailboxes = result.scalars().all()
+
+    # Build tenant name lookup
+    t_ids = list({m.tenant_id for m in mailboxes})
+    tenant_names: dict[uuid.UUID, str] = {}
+    if t_ids:
+        t_result = await db.execute(select(Tenant.id, Tenant.name).where(Tenant.id.in_(t_ids)))
+        for tid, tname in t_result.all():
+            tenant_names[tid] = tname
+
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow(["tenant_name", "email", "display_name", "password", "smtp_enabled"])
+    for m in mailboxes:
+        pwd = ""
+        if m.password:
+            try:
+                pwd = decrypt(m.password)
+            except Exception:
+                pass
+        writer.writerow([
+            tenant_names.get(m.tenant_id, ""),
+            m.email,
+            m.display_name or "",
+            pwd,
+            m.smtp_enabled,
+        ])
+
+    output.seek(0)
+    return StreamingResponse(
+        iter([output.getvalue()]),
+        media_type="text/csv",
+        headers={"Content-Disposition": "attachment; filename=all_mailboxes_export.csv"},
+    )
+
+
 @router.get("/{tenant_id}/export")
 async def export_mailboxes_csv(tenant_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
     result = await db.execute(

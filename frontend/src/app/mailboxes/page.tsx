@@ -3,7 +3,7 @@ import { useCallback, useEffect, useState } from "react";
 import { api } from "@/lib/api";
 import { Tenant, MailboxJob, WSEvent, BulkMailboxResult } from "@/lib/types";
 import { useWebSocket } from "@/hooks/useWebSocket";
-import { Plus, StopCircle, Download, ChevronDown, ChevronRight, Shield, ShieldCheck, Loader2, Upload } from "lucide-react";
+import { Plus, StopCircle, Download, ChevronDown, ChevronRight, Shield, ShieldCheck, Loader2, Upload, FileDown } from "lucide-react";
 import MailboxPipelineProgress from "@/components/mailboxes/MailboxPipelineProgress";
 
 export default function MailboxesPage() {
@@ -171,7 +171,15 @@ export default function MailboxesPage() {
 
   return (
     <div>
-      <h1 className="text-2xl font-bold mb-6">Mailbox Creation</h1>
+      <div className="flex items-center justify-between mb-6">
+        <h1 className="text-2xl font-bold">Mailbox Creation</h1>
+        <button
+          onClick={() => api.exportAllMailboxesCsv()}
+          className="flex items-center gap-1.5 px-3 py-1.5 text-xs bg-white border rounded-lg hover:bg-gray-50"
+        >
+          <FileDown size={14} /> Export All Mailboxes
+        </button>
+      </div>
 
       {/* Result Banner */}
       {result && (

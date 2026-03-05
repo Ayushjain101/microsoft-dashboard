@@ -49,6 +49,15 @@ export const api = {
   healthCheckTenant: (id: string) => request<{ status: string }>(`/api/v1/tenants/${id}/health-check`, { method: "POST" }),
   getCredentials: (id: string) => request<any>(`/api/v1/tenants/${id}/credentials`),
 
+  exportTenantsCsv: (ids?: string[]) => {
+    const params = ids?.length ? `?ids=${ids.join(",")}` : "";
+    window.open(`/api/v1/tenants/export${params}`, "_blank");
+  },
+  exportAllMailboxesCsv: (tenantIds?: string[]) => {
+    const params = tenantIds?.length ? `?tenant_ids=${tenantIds.join(",")}` : "";
+    window.open(`/api/v1/mailboxes/export-all${params}`, "_blank");
+  },
+
   // Mailboxes
   listMailboxes: (tenantId: string) => request<{ mailboxes: any[] }>(`/api/v1/mailboxes/${tenantId}`),
   createMailboxes: (tenantId: string, data: { domain: string; mailbox_count: number; cf_email?: string; cf_api_key?: string }) =>

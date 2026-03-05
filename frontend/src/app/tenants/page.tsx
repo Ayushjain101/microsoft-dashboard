@@ -7,7 +7,7 @@ import { useWebSocket } from "@/hooks/useWebSocket";
 import SetupProgress from "@/components/tenants/SetupProgress";
 import TenantSetupProgress from "@/components/tenants/TenantSetupProgress";
 import TenantHealthResults from "@/components/tenants/TenantHealthResults";
-import { Plus, Play, RotateCcw, Trash2, Download, ChevronDown, Pencil, X, HeartPulse, Loader2, Check, XCircle } from "lucide-react";
+import { Plus, Play, RotateCcw, Trash2, Download, ChevronDown, Pencil, X, HeartPulse, Loader2, Check, XCircle, FileDown } from "lucide-react";
 
 const STATUS_COLORS: Record<string, string> = {
   pending: "bg-gray-100 text-gray-700",
@@ -26,6 +26,7 @@ export default function TenantsPage() {
   const [progress, setProgress] = useState<Record<string, WSEvent>>({});
   const [healthChecking, setHealthChecking] = useState<Record<string, boolean>>({});
   const refreshTimerRef = useRef<ReturnType<typeof setTimeout>>(undefined);
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [editingTenant, setEditingTenant] = useState<Tenant | null>(null);
   const [editPassword, setEditPassword] = useState("");
   const [editSaving, setEditSaving] = useState(false);
@@ -35,6 +36,7 @@ export default function TenantsPage() {
       const data = await api.listTenants(page, filter || undefined);
       setTenants(data.tenants);
       setTotal(data.total);
+      setSelectedIds(new Set());
     } catch (e: any) {
       console.error("Failed to load tenants:", e);
       alert("Failed to load tenants: " + e.message);
@@ -346,11 +348,43 @@ export default function TenantsPage() {
         ))}
       </div>
 
+      {/* Export Bar */}
+      <div className="flex items-center gap-2 mb-4">
+        <button
+          onClick={() => api.exportTenantsCsv()}
+          className="flex items-center gap-1.5 px-3 py-1.5 text-xs bg-white border rounded-lg hover:bg-gray-50"
+        >
+          <FileDown size={14} /> Export All
+        </button>
+        {selectedIds.size > 0 && (
+          <button
+            onClick={() => api.exportTenantsCsv(Array.from(selectedIds))}
+            className="flex items-center gap-1.5 px-3 py-1.5 text-xs bg-blue-600 text-white rounded-lg hover:bg-blue-700"
+          >
+            <FileDown size={14} /> Export Selected ({selectedIds.size})
+          </button>
+        )}
+      </div>
+
       {/* Table */}
       <div className="bg-white rounded-lg border overflow-hidden">
         <table className="w-full text-sm">
           <thead className="bg-gray-50">
             <tr>
+              <th className="w-10 px-4 py-3">
+                <input
+                  type="checkbox"
+                  checked={tenants.length > 0 && selectedIds.size === tenants.length}
+                  onChange={(e) => {
+                    if (e.target.checked) {
+                      setSelectedIds(new Set(tenants.map(t => t.id)));
+                    } else {
+                      setSelectedIds(new Set());
+                    }
+                  }}
+                  className="rounded"
+                />
+              </th>
               <th className="text-left px-4 py-3 font-medium">Name</th>
               <th className="text-left px-4 py-3 font-medium">Admin Email</th>
               <th className="text-left px-4 py-3 font-medium">Status</th>
@@ -362,6 +396,21 @@ export default function TenantsPage() {
             {tenants.map((t) => (
               <Fragment key={t.id}>
                 <tr className="border-t hover:bg-gray-50">
+                  <td className="w-10 px-4 py-3">
+                    <input
+                      type="checkbox"
+                      checked={selectedIds.has(t.id)}
+                      onChange={(e) => {
+                        setSelectedIds(prev => {
+                          const next = new Set(prev);
+                          if (e.target.checked) next.add(t.id);
+                          else next.delete(t.id);
+                          return next;
+                        });
+                      }}
+                      className="rounded"
+                    />
+                  </td>
                   <td className="px-4 py-3 font-medium">
                     <div className="flex items-center gap-2">
                       <span
@@ -436,7 +485,7 @@ export default function TenantsPage() {
                 </tr>
                 {expandedId === t.id && (
                   <tr key={`${t.id}-exp`} className="border-t bg-gray-50">
-                    <td colSpan={5} className="px-4 py-4">
+                    <td colSpan={6} className="px-4 py-4">
                       {renderExpandedContent(t)}
                     </td>
                   </tr>
@@ -444,7 +493,7 @@ export default function TenantsPage() {
               </Fragment>
             ))}
             {tenants.length === 0 && (
-              <tr><td colSpan={5} className="px-4 py-8 text-center text-gray-400">No tenants found</td></tr>
+              <tr><td colSpan={6} className="px-4 py-8 text-center text-gray-400">No tenants found</td></tr>
             )}
           </tbody>
         </table>

@@ -7,6 +7,7 @@ import uuid
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File, status
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, EmailStr, field_validator
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -225,6 +226,63 @@ async def bulk_create_tenants(file: UploadFile = File(...), db: AsyncSession = D
 
     await db.commit()
     return {"created": len(created), "skipped": len(skipped), "skipped_emails": skipped}
+
+
+@router.get("/export")
+async def export_tenants_csv(
+    ids: str | None = Query(None, description="Comma-separated tenant IDs"),
+    status_filter: str | None = None,
+    db: AsyncSession = Depends(get_db),
+):
+    """Export tenants as CSV. If ids provided, export those; otherwise export all."""
+    mailbox_count_sq = (
+        select(Mailbox.tenant_id, func.count().label("mailbox_count"))
+        .group_by(Mailbox.tenant_id)
+        .subquery()
+    )
+    query = (
+        select(Tenant, mailbox_count_sq.c.mailbox_count)
+        .outerjoin(mailbox_count_sq, Tenant.id == mailbox_count_sq.c.tenant_id)
+        .order_by(Tenant.created_at.desc())
+    )
+    if ids:
+        id_list = [uuid.UUID(i.strip()) for i in ids.split(",") if i.strip()]
+        query = query.where(Tenant.id.in_(id_list))
+    elif status_filter:
+        query = query.where(Tenant.status == status_filter)
+
+    result = await db.execute(query)
+    rows = result.all()
+
+    # Fetch domains
+    tenant_ids = [t.id for t, _ in rows]
+    domain_map: dict[uuid.UUID, list[str]] = {}
+    if tenant_ids:
+        domain_q = select(Domain).where(Domain.tenant_id.in_(tenant_ids))
+        domain_result = await db.execute(domain_q)
+        for d in domain_result.scalars().all():
+            domain_map.setdefault(d.tenant_id, []).append(d.domain)
+
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow(["name", "admin_email", "status", "mailbox_count", "domains", "created_at", "completed_at"])
+    for tenant, mb_count in rows:
+        writer.writerow([
+            tenant.name,
+            tenant.admin_email,
+            tenant.status,
+            mb_count or 0,
+            "; ".join(domain_map.get(tenant.id, [])),
+            tenant.created_at.isoformat() if tenant.created_at else "",
+            tenant.completed_at.isoformat() if tenant.completed_at else "",
+        ])
+
+    output.seek(0)
+    return StreamingResponse(
+        iter([output.getvalue()]),
+        media_type="text/csv",
+        headers={"Content-Disposition": "attachment; filename=tenants_export.csv"},
+    )
 
 
 @router.get("/{tenant_id}/credentials")
