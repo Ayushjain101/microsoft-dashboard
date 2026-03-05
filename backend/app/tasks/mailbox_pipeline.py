@@ -133,7 +133,7 @@ def _load_tenant_data(tenant_id: str) -> dict:
                             data["org_domain"] = d["name"]
                             break
             except Exception:
-                pass
+                logger.warning("Failed to resolve org_domain from Graph API, using fallback", exc_info=True)
         if "org_domain" not in data:
             data["org_domain"] = f"{tenant.name}.onmicrosoft.com"
 
@@ -353,7 +353,7 @@ def run_mailbox_pipeline(self, job_id: str):
                             ps.run([f"Set-DkimSigningConfig -Identity '{domain}' -Enabled $true"])
                             dkim_ok = True
                         except RuntimeError:
-                            pass
+                            logger.warning(f"DKIM Set-DkimSigningConfig fallback failed for {domain}", exc_info=True)
 
             with Session(sync_engine) as db:
                 dom = db.execute(

@@ -95,8 +95,9 @@ def main():
 
         # Map sheet status to DB status
         db_status = {
-            "complete": "completed",
-            "done": "completed",
+            "complete": "complete",
+            "done": "complete",
+            "completed": "complete",
             "failed": "failed",
             "running": "failed",  # stale running = treat as failed
             "pending": "pending",
@@ -104,7 +105,7 @@ def main():
 
         # Parse completed_at
         db_completed_at = None
-        if completed_at and db_status == "completed":
+        if completed_at and db_status == "complete":
             try:
                 db_completed_at = datetime.fromisoformat(completed_at.replace("Z", "+00:00"))
             except Exception:

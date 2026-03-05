@@ -37,6 +37,7 @@ class ConnectionManager:
             try:
                 await ws.send_text(data)
             except Exception:
+                logger.warning("WebSocket send failed, removing stale connection", exc_info=True)
                 stale.append(ws)
         for ws in stale:
             self.disconnect(ws)
@@ -90,9 +91,15 @@ def publish_event_sync(event_type: str, data: dict):
     """Synchronous version for use in Celery tasks."""
     import redis as sync_redis
 
-    r = sync_redis.from_url(settings.redis_url, decode_responses=True)
+    if not hasattr(publish_event_sync, "_pool"):
+        publish_event_sync._pool = sync_redis.ConnectionPool.from_url(
+            settings.redis_url, decode_responses=True
+        )
+    r = sync_redis.Redis(connection_pool=publish_event_sync._pool)
     try:
         payload = json.dumps({"type": event_type, **data})
         r.publish(CHANNEL, payload)
+    except Exception:
+        logger.warning("Failed to publish WebSocket event via Redis", exc_info=True)
     finally:
         r.close()

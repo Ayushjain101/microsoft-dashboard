@@ -2,8 +2,11 @@
 
 import csv
 import io
+import logging
 import uuid
 from typing import Optional
+
+logger = logging.getLogger(__name__)
 
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Query
 from fastapi.responses import StreamingResponse
@@ -254,6 +257,7 @@ async def bulk_create_mailboxes_csv(
 
         try:
             count_val = int(count_str) if count_str else 50
+            count_val = max(1, min(500, count_val))
         except ValueError:
             errors.append({"tenant_id": tenant_email, "error": f"Invalid count: {count_str}"})
             continue
@@ -313,7 +317,7 @@ async def export_all_mailboxes_csv(
             try:
                 pwd = decrypt(m.password)
             except Exception:
-                pass
+                logger.warning(f"Failed to decrypt password for mailbox {m.email}", exc_info=True)
         writer.writerow([
             tenant_names.get(m.tenant_id, ""),
             m.email,
@@ -346,7 +350,7 @@ async def export_mailboxes_csv(tenant_id: uuid.UUID, db: AsyncSession = Depends(
             try:
                 pwd = decrypt(m.password)
             except Exception:
-                pass
+                logger.warning(f"Failed to decrypt password for mailbox {m.email}", exc_info=True)
         writer.writerow([m.email, m.display_name or "", pwd, m.smtp_enabled])
 
     output.seek(0)

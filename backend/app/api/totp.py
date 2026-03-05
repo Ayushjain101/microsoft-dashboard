@@ -1,8 +1,11 @@
 """TOTP Vault — live authenticator codes for tenants with MFA secrets."""
 
 import base64
+import logging
 import time
 import uuid as uuid_mod
+
+logger = logging.getLogger(__name__)
 
 import pyotp
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -74,7 +77,7 @@ async def list_totp(db: AsyncSession = Depends(get_db)):
                 )
             )
         except Exception:
-            # Skip tenants with corrupt/invalid secrets
+            logger.warning(f"Skipping tenant {t.id} ({t.name}) — corrupt/invalid MFA secret", exc_info=True)
             continue
 
     return entries

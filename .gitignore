@@ -44,3 +44,7 @@ Thumbs.db
 # IDE
 .vscode/
 .idea/
+
+# Build artifacts
+frontend/tsconfig.tsbuildinfo
+backend/celerybeat-schedule

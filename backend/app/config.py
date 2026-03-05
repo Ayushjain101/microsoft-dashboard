@@ -1,5 +1,6 @@
 """Pydantic Settings — loaded from environment / .env file."""
 
+from pydantic import model_validator
 from pydantic_settings import BaseSettings
 
 
@@ -24,6 +25,15 @@ class Settings(BaseSettings):
     cors_origins: list[str] = ["http://localhost:3000"]
 
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
+
+    @model_validator(mode="after")
+    def validate_fernet_key(self):
+        if not self.fernet_key:
+            raise ValueError(
+                "FERNET_KEY environment variable is required. "
+                "Generate one with: python -c 'from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())'"
+            )
+        return self
 
 
 settings = Settings()

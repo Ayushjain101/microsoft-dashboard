@@ -98,6 +98,7 @@ async def acknowledge_alert(alert_id: int, db: AsyncSession = Depends(get_db)):
 @router.get("/{tenant_id}/mailflow")
 async def mailflow_history(tenant_id: uuid.UUID, limit: int = 20, db: AsyncSession = Depends(get_db)):
     """Last N mailflow checks for a tenant."""
+    limit = min(limit, 500)
     result = await db.execute(
         select(MonitorCheck)
         .where(MonitorCheck.tenant_id == tenant_id, MonitorCheck.check_type == "mailflow")
@@ -121,6 +122,7 @@ async def mailflow_history(tenant_id: uuid.UUID, limit: int = 20, db: AsyncSessi
 @router.get("/{tenant_id}")
 async def tenant_health(tenant_id: uuid.UUID, limit: int = 100, db: AsyncSession = Depends(get_db)):
     """Health history for a specific tenant."""
+    limit = min(limit, 500)
     result = await db.execute(
         select(MonitorCheck)
         .where(MonitorCheck.tenant_id == tenant_id)
