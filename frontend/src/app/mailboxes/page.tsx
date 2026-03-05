@@ -3,7 +3,7 @@ import { useCallback, useEffect, useState } from "react";
 import { api } from "@/lib/api";
 import { Tenant, MailboxJob, WSEvent, BulkMailboxResult, MailboxHealthResult, RetryMissingResult } from "@/lib/types";
 import { useWebSocket } from "@/hooks/useWebSocket";
-import { Plus, StopCircle, Download, ChevronDown, ChevronRight, Shield, ShieldCheck, Loader2, Upload, FileDown, HeartPulse, RefreshCw } from "lucide-react";
+import { Plus, StopCircle, Download, ChevronDown, ChevronRight, Shield, ShieldCheck, Loader2, Upload, FileDown, HeartPulse, RefreshCw, Lock } from "lucide-react";
 import MailboxPipelineProgress from "@/components/mailboxes/MailboxPipelineProgress";
 
 export default function MailboxesPage() {
@@ -36,6 +36,10 @@ export default function MailboxesPage() {
   // Retry missing state
   const [retryLoading, setRetryLoading] = useState<Set<string>>(new Set());
   const [retryResults, setRetryResults] = useState<Record<string, RetryMissingResult>>({});
+
+  // Fix security defaults state
+  const [fixLoading, setFixLoading] = useState<Set<string>>(new Set());
+  const [fixResults, setFixResults] = useState<Record<string, { status: string; detail?: string; error?: string }>>({});
 
   // Result banner
   const [result, setResult] = useState<BulkMailboxResult | null>(null);
@@ -87,6 +91,10 @@ export default function MailboxesPage() {
         // Clear old health results since they're stale now
         setHealthResults(prev => { const n = { ...prev }; delete n[event.job_id!]; return n; });
       }
+    }
+    if (event.type === "fix_security_defaults" && event.tenant_id) {
+      setFixLoading(prev => { const n = new Set(prev); n.delete(event.tenant_id!); return n; });
+      setFixResults(prev => ({ ...prev, [event.tenant_id!]: { status: event.status || "complete", detail: event.detail, error: event.error } }));
     }
     if (event.type === "dkim_enabled" && event.job_id) {
       setDkimLoading(prev => { const n = new Set(prev); n.delete(event.job_id!); return n; });
@@ -202,6 +210,16 @@ export default function MailboxesPage() {
     }
   }
 
+  async function handleFixSecurityDefaults(tenantId: string) {
+    setFixLoading(prev => new Set(prev).add(tenantId));
+    try {
+      await api.fixSecurityDefaults(tenantId);
+    } catch (err: any) {
+      setFixLoading(prev => { const n = new Set(prev); n.delete(tenantId); return n; });
+      alert(err.message);
+    }
+  }
+
   async function handleExport(tenantId: string) {
     window.open(`/api/v1/mailboxes/${tenantId}/export`, "_blank");
   }
@@ -222,7 +240,7 @@ export default function MailboxesPage() {
     return { actual, requested: job.mailbox_count, mismatch: failed > 0 };
   }
 
-  function HealthCheckBanner({ result: r }: { result: MailboxHealthResult }) {
+  function HealthCheckBanner({ result: r, tenantId }: { result: MailboxHealthResult; tenantId: string }) {
     if (r.status === "error") {
       return (
         <div className="mt-2 p-3 bg-red-50 border border-red-200 rounded text-xs text-red-700">
@@ -263,6 +281,27 @@ export default function MailboxesPage() {
             {r.smtp_failed!.map((f, i) => (
               <span key={i} className="font-mono">{f.email}{i < r.smtp_failed!.length - 1 ? ", " : ""}</span>
             ))}
+          </div>
+        )}
+        {(r.smtp_failed?.length ?? 0) > 0 && (
+          <div className="mt-2">
+            {fixLoading.has(tenantId) ? (
+              <span className="inline-flex items-center gap-1.5 text-xs text-blue-600">
+                <Loader2 size={12} className="animate-spin" /> Fixing security defaults...
+              </span>
+            ) : fixResults[tenantId] ? (
+              <span className={`text-xs ${fixResults[tenantId].status === "complete" ? "text-green-700" : "text-red-700"}`}>
+                {fixResults[tenantId].status === "complete" ? fixResults[tenantId].detail : `Error: ${fixResults[tenantId].error}`}
+                {fixResults[tenantId].status === "complete" && " — Run health check again to verify."}
+              </span>
+            ) : (
+              <button
+                onClick={(e) => { e.stopPropagation(); handleFixSecurityDefaults(tenantId); }}
+                className="inline-flex items-center gap-1.5 px-2.5 py-1 text-xs bg-blue-600 text-white rounded hover:bg-blue-700"
+              >
+                <Lock size={12} /> Fix SMTP Auth (Disable Security Defaults)
+              </button>
+            )}
           </div>
         )}
       </div>
@@ -546,6 +585,19 @@ export default function MailboxesPage() {
             >
               <HeartPulse size={14} /> Health Check ({jobs.filter(j => selectedJobTenantIds.has(j.tenant_id) && (j.status === "complete" || j.status === "failed")).length})
             </button>
+            <button
+              onClick={() => {
+                const tenantIds = new Set(
+                  jobs.filter(j => selectedJobTenantIds.has(j.tenant_id) && (j.status === "complete" || j.status === "failed"))
+                    .map(j => j.tenant_id)
+                );
+                if (tenantIds.size === 0) { alert("No complete/failed jobs selected"); return; }
+                tenantIds.forEach(tid => handleFixSecurityDefaults(tid));
+              }}
+              className="flex items-center gap-1.5 px-3 py-1.5 text-xs bg-indigo-500 text-white rounded-lg hover:bg-indigo-600"
+            >
+              <Lock size={14} /> Fix SMTP Auth ({new Set(jobs.filter(j => selectedJobTenantIds.has(j.tenant_id) && (j.status === "complete" || j.status === "failed")).map(j => j.tenant_id)).size})
+            </button>
           </>
         )}
       </div>
@@ -711,7 +763,7 @@ export default function MailboxesPage() {
                           currentStep={parseCurrentStep(j.current_phase)}
                         />
                         {healthResults[j.id] && (
-                          <HealthCheckBanner result={healthResults[j.id]} />
+                          <HealthCheckBanner result={healthResults[j.id]} tenantId={j.tenant_id} />
                         )}
                         {retryResults[j.id] && (
                           <RetryResultBanner result={retryResults[j.id]} />

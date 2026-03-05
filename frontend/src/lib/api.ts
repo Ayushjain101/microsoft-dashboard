@@ -47,6 +47,7 @@ export const api = {
   setupTenant: (id: string) => request(`/api/v1/tenants/${id}/setup`, { method: "POST" }),
   retryTenant: (id: string) => request(`/api/v1/tenants/${id}/retry`, { method: "POST" }),
   healthCheckTenant: (id: string) => request<{ status: string }>(`/api/v1/tenants/${id}/health-check`, { method: "POST" }),
+  fixSecurityDefaults: (id: string) => request<{ status: string }>(`/api/v1/tenants/${id}/fix-security-defaults`, { method: "POST" }),
   getCredentials: (id: string) => request<any>(`/api/v1/tenants/${id}/credentials`),
 
   exportTenantsCsv: (ids?: string[]) => {

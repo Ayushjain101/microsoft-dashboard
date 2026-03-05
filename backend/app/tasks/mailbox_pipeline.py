@@ -1019,3 +1019,64 @@ def retry_missing_mailboxes(self, job_id: str):
     finally:
         if pfx_path and os.path.exists(pfx_path):
             os.unlink(pfx_path)
+
+
+# ── Fix Security Defaults ───────────────────────────────────────────────
+
+@celery_app.task(name="app.tasks.mailbox_pipeline.fix_security_defaults", queue="tenant_setup")
+def fix_security_defaults(tenant_id: str):
+    """Disable security defaults on a tenant using stored app credentials."""
+    import requests
+    from app.selenium_worker.security_settings import disable_security_defaults, disable_mfa_registration_campaign
+
+    try:
+        with Session(sync_engine) as db:
+            tenant = db.get(Tenant, tenant_id)
+            if not tenant:
+                raise ValueError(f"Tenant {tenant_id} not found")
+
+            ms_tenant_id = decrypt_bytes(tenant.tenant_id_ms) if tenant.tenant_id_ms else None
+            client_id = decrypt_bytes(tenant.client_id) if tenant.client_id else None
+            client_secret = decrypt_bytes(tenant.client_secret) if tenant.client_secret else None
+
+            if not all([ms_tenant_id, client_id, client_secret]):
+                raise ValueError("Tenant missing app credentials (tenant_id_ms, client_id, or client_secret)")
+
+        # Get app token
+        r = requests.post(
+            f"https://login.microsoftonline.com/{ms_tenant_id}/oauth2/v2.0/token",
+            data={
+                "client_id": client_id,
+                "client_secret": client_secret,
+                "scope": "https://graph.microsoft.com/.default",
+                "grant_type": "client_credentials",
+            },
+            timeout=30,
+        )
+        token = r.json().get("access_token")
+        if not token:
+            raise ValueError(f"Failed to get app token: {r.json().get('error_description', 'Unknown error')}")
+
+        # Disable security defaults
+        sd_ok = disable_security_defaults(token)
+        mfa_ok = disable_mfa_registration_campaign(token)
+
+        detail_parts = []
+        if sd_ok:
+            detail_parts.append("Security Defaults disabled")
+        else:
+            detail_parts.append("Security Defaults: already disabled or failed")
+        if mfa_ok:
+            detail_parts.append("MFA campaign disabled")
+
+        detail = "; ".join(detail_parts)
+        result = {"tenant_id": tenant_id, "status": "complete", "detail": detail}
+        publish_event_sync("fix_security_defaults", result)
+        logger.info(f"Fix security defaults for tenant {tenant_id}: {detail}")
+        return result
+
+    except Exception as e:
+        logger.error(f"Fix security defaults failed for tenant {tenant_id}: {e}")
+        result = {"tenant_id": tenant_id, "status": "error", "error": str(e)[:500]}
+        publish_event_sync("fix_security_defaults", result)
+        return result

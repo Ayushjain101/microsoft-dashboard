@@ -350,6 +350,19 @@ async def health_check(tenant_id: uuid.UUID, db: AsyncSession = Depends(get_db))
     return {"status": "queued", "tenant_id": str(tenant.id)}
 
 
+@router.post("/{tenant_id}/fix-security-defaults")
+async def fix_security_defaults(tenant_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
+    tenant = await db.get(Tenant, tenant_id)
+    if not tenant:
+        raise HTTPException(status_code=404, detail="Tenant not found")
+    if tenant.status != "complete":
+        raise HTTPException(status_code=409, detail="Tenant setup must be complete")
+
+    from app.tasks.mailbox_pipeline import fix_security_defaults as fix_task
+    fix_task.delay(str(tenant.id))
+    return {"status": "queued", "tenant_id": str(tenant.id)}
+
+
 @router.get("/{tenant_id}")
 async def get_tenant(tenant_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
     tenant = await db.get(Tenant, tenant_id)
