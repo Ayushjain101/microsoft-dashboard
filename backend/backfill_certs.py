@@ -4,8 +4,16 @@ Generates a new cert, uploads to Azure via Graph API, saves to DB.
 Run from backend dir: python3 backfill_certs.py
 """
 
-import sys
+import os
 import time
+
+# Load .env before any app imports
+with open(os.path.join(os.path.dirname(__file__), "..", ".env")) as f:
+    for line in f:
+        line = line.strip()
+        if line and not line.startswith("#") and "=" in line:
+            key, val = line.split("=", 1)
+            os.environ.setdefault(key, val)
 
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
