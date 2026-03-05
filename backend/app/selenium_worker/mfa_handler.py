@@ -624,23 +624,9 @@ def _handle_mfa(b):
 
     # Step E: Extract secret key
     saved_secret_key = _mfa_extract_secret(driver)
-    if not saved_secret_key:
-        try:
-            for el in driver.find_elements(By.CSS_SELECTOR,
-                    "div, span, p, code, pre, input[type='text'], td, label"):
-                txt = el.text.strip()
-                if txt and len(txt) >= 16 and re.match(r'^[A-Z2-7]+$', txt):
-                    saved_secret_key = txt
-                    break
-                val = el.get_attribute("value") or ""
-                if val and len(val) >= 16 and re.match(r'^[A-Z2-7]+$', val.upper()):
-                    saved_secret_key = val.upper()
-                    break
-        except Exception:
-            pass
 
     if saved_secret_key:
-        logger.info(f"SECRET KEY: {saved_secret_key[:8]}...{saved_secret_key[-4:]}")
+        logger.info(f"SECRET KEY: {saved_secret_key[:8]}...{saved_secret_key[-4:]} (len={len(saved_secret_key)})")
 
         otp_code = _mfa_generate_otp(saved_secret_key)
         if not otp_code:
@@ -662,6 +648,7 @@ def _handle_mfa(b):
                 elif _mfa_try_click(driver, By.ID, "idSIButton9", timeout=1):
                     time.sleep(3)
 
+        otp_verified = False
         if otp_field:
             otp_code = _mfa_generate_otp(saved_secret_key)
             if not otp_code:
@@ -678,47 +665,75 @@ def _handle_mfa(b):
                 _mfa_click_next(driver)
             time.sleep(4)
 
-            # Retry if OTP was rejected
+            # Check if OTP was rejected
+            otp_error = False
             try:
                 error_el = driver.find_element(By.CSS_SELECTOR, "[role='alert'], .error-text, #errorText")
                 if error_el.is_displayed() and error_el.text.strip():
-                    otp_code = _mfa_generate_otp(saved_secret_key)
-                    otp_field = _mfa_find_otp_input(driver)
-                    if otp_field and otp_code:
-                        otp_field.click()
-                        otp_field.clear()
-                        otp_field.send_keys(otp_code)
-                        time.sleep(0.5)
-                        if not _mfa_try_click(driver, By.ID, "idSubmit_SAOTCC_Continue", timeout=3):
-                            _mfa_click_next(driver)
-                        time.sleep(4)
+                    logger.warning(f"OTP rejected (attempt 1): {error_el.text.strip()[:100]}")
+                    otp_error = True
             except Exception:
                 pass
 
-            # Step H: Click Done
-            time.sleep(3)
-            for _ in range(5):
-                for btn_id in ["idSIButton9", "idSubmit_ProofUp_Redirect"]:
-                    if _mfa_try_click(driver, By.ID, btn_id, timeout=2):
-                        time.sleep(3)
-                        break
-                else:
+            if otp_error:
+                # Retry with fresh OTP
+                otp_code = _mfa_generate_otp(saved_secret_key)
+                otp_field = _mfa_find_otp_input(driver)
+                if otp_field and otp_code:
+                    otp_field.click()
+                    otp_field.clear()
+                    otp_field.send_keys(otp_code)
+                    time.sleep(0.5)
+                    if not _mfa_try_click(driver, By.ID, "idSubmit_SAOTCC_Continue", timeout=3):
+                        _mfa_click_next(driver)
+                    time.sleep(4)
+                    # Check again
                     try:
-                        for btn in driver.find_elements(By.CSS_SELECTOR,
-                                "button, input[type='submit'], input[type='button']"):
-                            btn_text = (btn.text or btn.get_attribute("value") or "").lower()
-                            if btn.is_displayed() and any(kw in btn_text
-                                    for kw in ["done", "finish", "complete", "ok", "got it"]):
-                                driver.execute_script("arguments[0].click();", btn)
-                                time.sleep(3)
-                                break
+                        error_el = driver.find_element(By.CSS_SELECTOR, "[role='alert'], .error-text, #errorText")
+                        if error_el.is_displayed() and error_el.text.strip():
+                            logger.error(f"OTP rejected TWICE: {error_el.text.strip()[:100]} — "
+                                         "NOT saving secret to prevent lockout")
+                            saved_secret_key = None
+                        else:
+                            otp_verified = True
                     except Exception:
-                        pass
-                    time.sleep(2)
-                    continue
-                break
-    else:
-        logger.warning("No secret key found — waiting for manual MFA completion (120s)...")
+                        otp_verified = True
+                else:
+                    logger.error("Could not retry OTP — NOT saving secret to prevent lockout")
+                    saved_secret_key = None
+            else:
+                otp_verified = True
+
+            if otp_verified:
+                logger.info("OTP verification succeeded")
+                # Step H: Click Done
+                time.sleep(3)
+                for _ in range(5):
+                    for btn_id in ["idSIButton9", "idSubmit_ProofUp_Redirect"]:
+                        if _mfa_try_click(driver, By.ID, btn_id, timeout=2):
+                            time.sleep(3)
+                            break
+                    else:
+                        try:
+                            for btn in driver.find_elements(By.CSS_SELECTOR,
+                                    "button, input[type='submit'], input[type='button']"):
+                                btn_text = (btn.text or btn.get_attribute("value") or "").lower()
+                                if btn.is_displayed() and any(kw in btn_text
+                                        for kw in ["done", "finish", "complete", "ok", "got it"]):
+                                    driver.execute_script("arguments[0].click();", btn)
+                                    time.sleep(3)
+                                    break
+                        except Exception:
+                            pass
+                        time.sleep(2)
+                        continue
+                    break
+        else:
+            logger.error("Could not find OTP input field — NOT saving secret to prevent lockout")
+            saved_secret_key = None
+
+    if not saved_secret_key:
+        logger.warning("No verified secret — waiting for manual MFA completion (120s)...")
         for _ in range(60):
             time.sleep(2)
             try:
@@ -818,10 +833,11 @@ def _mfa_click_cant_scan(driver):
 def _mfa_extract_secret(driver):
     try:
         body_text = driver.find_element(By.TAG_NAME, "body").text
-        # Labeled patterns (preceded by "Secret key:", "Key:", etc.) — more trustworthy
+        logger.debug(f"MFA page text (first 500 chars): {body_text[:500]}")
+        # Labeled patterns — require "secret key" or "secret" label (not bare "Key"/"Code")
         labeled_patterns = [
-            r"(?:Secret\s*(?:key)?|Key|Code)[:\s]+([A-Z2-7]{16,})",
-            r"(?:secret|key)[=:\s]+([a-zA-Z2-7]{16,})",
+            r"(?:Secret\s*(?:key)?)[:\s]+([A-Z2-7]{16,})",
+            r"(?:secret\s*key)[=:\s]+([a-zA-Z2-7]{16,})",
         ]
         # Unlabeled patterns — require stricter validation (32+ chars)
         unlabeled_patterns = [
@@ -835,15 +851,32 @@ def _mfa_extract_secret(driver):
                     if _validate_totp_secret(secret):
                         return secret
                     else:
-                        logger.warning(f"Rejected labeled secret match: {secret[:8]}...")
+                        import base64
+                        padded = secret + "=" * (-len(secret) % 8)
+                        decoded_len = len(base64.b32decode(padded))
+                        logger.warning(f"Rejected labeled secret: len={len(secret)} base32 chars, "
+                                       f"{decoded_len} decoded bytes, preview={secret[:8]}...")
         for pattern in unlabeled_patterns:
             match = re.search(pattern, body_text)
             if match:
                 secret = match.group(1).strip().upper()
                 if re.match(r'^[A-Z2-7]+$', secret) and _validate_totp_secret(secret):
                     return secret
-    except Exception:
-        pass
+        # Fallback: scan individual elements for base32 text or input values
+        for el in driver.find_elements(By.CSS_SELECTOR,
+                "code, pre, input[type='text'], span[data-testid], div[data-testid]"):
+            try:
+                txt = el.text.strip().upper()
+                if txt and len(txt) >= 16 and re.match(r'^[A-Z2-7]+$', txt) and _validate_totp_secret(txt):
+                    return txt
+                val = (el.get_attribute("value") or "").strip().upper()
+                if val and len(val) >= 16 and re.match(r'^[A-Z2-7]+$', val) and _validate_totp_secret(val):
+                    return val
+            except Exception:
+                continue
+        logger.warning(f"Secret extraction failed. Page text preview: {body_text[:300]}")
+    except Exception as e:
+        logger.error(f"Exception during secret extraction: {e}")
     return None
 
 
