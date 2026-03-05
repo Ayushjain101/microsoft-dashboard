@@ -13,6 +13,19 @@ PWSH_PATH = "pwsh"
 
 _ANSI_RE = re.compile(r'\x1b\[[0-9;]*m')
 
+# Smart/curly quotes → straight quotes mapping
+_SMART_QUOTES = str.maketrans({
+    '\u2018': "'", '\u2019': "'",  # ' '
+    '\u201C': '"', '\u201D': '"',  # " "
+})
+
+
+def _clean_ps_output(text: str) -> str:
+    """Strip ANSI codes and normalize smart quotes from PowerShell output."""
+    text = _ANSI_RE.sub('', text)
+    text = text.translate(_SMART_QUOTES)
+    return text
+
 
 def escape_ps_string(value: str) -> str:
     """Escape a string for safe use inside PowerShell single quotes.
@@ -73,9 +86,9 @@ class PowerShellRunner:
             capture_output=True, text=True, timeout=timeout
         )
         if result.returncode != 0:
-            # Strip ANSI escape codes from PowerShell output for clean error messages
-            stdout_clean = _ANSI_RE.sub('', result.stdout)
-            stderr_clean = _ANSI_RE.sub('', result.stderr)
+            # Strip ANSI escape codes and normalize smart quotes from PowerShell output
+            stdout_clean = _clean_ps_output(result.stdout)
+            stderr_clean = _clean_ps_output(result.stderr)
             raise RuntimeError(
                 f"PowerShell error (exit {result.returncode}):\n"
                 f"STDOUT: {stdout_clean}\nSTDERR: {stderr_clean}"
