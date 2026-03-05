@@ -60,16 +60,27 @@ export default function MailboxPipelineProgress({ stepResults, jobStatus, curren
         const style = STATUS_STYLES[status] || STATUS_STYLES.pending;
         const detail = getDetail(stepNum);
 
+        const showDetail = detail && (status === "warning" || status === "failed");
+        // Extract first line as summary for inline display
+        const detailSummary = detail?.split("\n")[0];
+
         return (
           <div
             key={stepNum}
-            className={`flex items-center gap-2 px-3 py-2 rounded-md ${style.bg} group relative`}
+            className={`flex flex-col gap-0.5 px-3 py-2 rounded-md ${style.bg} group relative`}
             title={detail || name}
           >
-            <span className={`w-2 h-2 rounded-full shrink-0 ${style.dot}`} />
-            <span className={`text-xs font-medium ${style.text} truncate`}>
-              {stepNum}. {name}
-            </span>
+            <div className="flex items-center gap-2">
+              <span className={`w-2 h-2 rounded-full shrink-0 ${style.dot}`} />
+              <span className={`text-xs font-medium ${style.text} truncate`}>
+                {stepNum}. {name}
+              </span>
+            </div>
+            {showDetail && (
+              <span className={`text-[10px] ${style.text} opacity-75 truncate ml-4`} title={detail}>
+                {detailSummary}
+              </span>
+            )}
             {detail && (
               <div className="absolute bottom-full left-0 mb-1 hidden group-hover:block z-10 max-w-xs">
                 <div className="bg-gray-900 text-white text-xs rounded px-3 py-2 shadow-lg whitespace-pre-wrap">

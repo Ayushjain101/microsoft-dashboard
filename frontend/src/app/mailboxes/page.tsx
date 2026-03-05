@@ -1,9 +1,9 @@
 "use client";
 import { useCallback, useEffect, useState } from "react";
 import { api } from "@/lib/api";
-import { Tenant, MailboxJob, WSEvent, BulkMailboxResult } from "@/lib/types";
+import { Tenant, MailboxJob, WSEvent, BulkMailboxResult, MailboxHealthResult } from "@/lib/types";
 import { useWebSocket } from "@/hooks/useWebSocket";
-import { Plus, StopCircle, Download, ChevronDown, ChevronRight, Shield, ShieldCheck, Loader2, Upload, FileDown } from "lucide-react";
+import { Plus, StopCircle, Download, ChevronDown, ChevronRight, Shield, ShieldCheck, Loader2, Upload, FileDown, HeartPulse } from "lucide-react";
 import MailboxPipelineProgress from "@/components/mailboxes/MailboxPipelineProgress";
 
 export default function MailboxesPage() {
@@ -28,6 +28,10 @@ export default function MailboxesPage() {
 
   // Job selection for export
   const [selectedJobTenantIds, setSelectedJobTenantIds] = useState<Set<string>>(new Set());
+
+  // Health check state
+  const [healthLoading, setHealthLoading] = useState<Set<string>>(new Set());
+  const [healthResults, setHealthResults] = useState<Record<string, MailboxHealthResult>>({});
 
   // Result banner
   const [result, setResult] = useState<BulkMailboxResult | null>(null);
@@ -59,6 +63,15 @@ export default function MailboxesPage() {
         }
         return { ...j, step_results: updated };
       }));
+    }
+    if (event.type === "mailbox_health_check" && event.job_id) {
+      const r = event as unknown as MailboxHealthResult;
+      if (r.status === "running") {
+        setHealthLoading(prev => new Set(prev).add(event.job_id!));
+      } else {
+        setHealthLoading(prev => { const n = new Set(prev); n.delete(event.job_id!); return n; });
+        setHealthResults(prev => ({ ...prev, [event.job_id!]: r }));
+      }
     }
     if (event.type === "dkim_enabled" && event.job_id) {
       setDkimLoading(prev => { const n = new Set(prev); n.delete(event.job_id!); return n; });
@@ -154,6 +167,16 @@ export default function MailboxesPage() {
     }
   }
 
+  async function handleHealthCheck(jobId: string) {
+    setHealthLoading(prev => new Set(prev).add(jobId));
+    try {
+      await api.healthCheckMailboxes(jobId);
+    } catch (err: any) {
+      setHealthLoading(prev => { const n = new Set(prev); n.delete(jobId); return n; });
+      alert(err.message);
+    }
+  }
+
   async function handleExport(tenantId: string) {
     window.open(`/api/v1/mailboxes/${tenantId}/export`, "_blank");
   }
@@ -162,6 +185,63 @@ export default function MailboxesPage() {
     if (!phase) return null;
     const m = phase.match(/^Step (\d+)\//);
     return m ? parseInt(m[1], 10) : null;
+  }
+
+  function getActualCount(job: MailboxJob): { actual: number; requested: number; mismatch: boolean } | null {
+    const step7 = job.step_results?.["7"];
+    if (!step7?.detail) return null;
+    const m = step7.detail.match(/Created:\s*(\d+),\s*Existed:\s*(\d+),\s*Failed:\s*(\d+)/);
+    if (!m) return null;
+    const actual = parseInt(m[1]) + parseInt(m[2]);
+    const failed = parseInt(m[3]);
+    return { actual, requested: job.mailbox_count, mismatch: failed > 0 };
+  }
+
+  function HealthCheckBanner({ result: r }: { result: MailboxHealthResult }) {
+    if (r.status === "error") {
+      return (
+        <div className="mt-2 p-3 bg-red-50 border border-red-200 rounded text-xs text-red-700">
+          <span className="font-medium">Health check error:</span> {r.error}
+        </div>
+      );
+    }
+    if (r.status !== "complete") return null;
+
+    const allGood = r.missing?.length === 0 && r.smtp_failed?.length === 0;
+    const bgColor = allGood ? "bg-green-50 border-green-200" : "bg-yellow-50 border-yellow-200";
+    const textColor = allGood ? "text-green-800" : "text-yellow-800";
+
+    return (
+      <div className={`mt-2 p-3 ${bgColor} border rounded text-xs ${textColor}`}>
+        <div className="flex items-center gap-4 mb-1">
+          <span className="font-medium">
+            {allGood ? "All mailboxes healthy" : "Health check issues found"}
+          </span>
+          <span>Exchange: {r.found_in_exchange}/{r.total_in_db} found</span>
+          <span>SMTP: {r.smtp_ok}/{r.smtp_tested} passed</span>
+        </div>
+        {(r.missing?.length ?? 0) > 0 && (
+          <div className="mt-1">
+            <span className="font-medium text-red-700">Missing from Exchange ({r.missing!.length}):</span>{" "}
+            <span className="font-mono">{r.missing!.slice(0, 10).join(", ")}{r.missing!.length > 10 ? ` +${r.missing!.length - 10} more` : ""}</span>
+          </div>
+        )}
+        {(r.extra_in_exchange?.length ?? 0) > 0 && (
+          <div className="mt-1">
+            <span className="font-medium">Extra in Exchange ({r.extra_in_exchange!.length}):</span>{" "}
+            <span className="font-mono">{r.extra_in_exchange!.slice(0, 10).join(", ")}{r.extra_in_exchange!.length > 10 ? ` +${r.extra_in_exchange!.length - 10} more` : ""}</span>
+          </div>
+        )}
+        {(r.smtp_failed?.length ?? 0) > 0 && (
+          <div className="mt-1">
+            <span className="font-medium text-red-700">SMTP auth failed ({r.smtp_failed!.length}):</span>{" "}
+            {r.smtp_failed!.map((f, i) => (
+              <span key={i} className="font-mono">{f.email}{i < r.smtp_failed!.length - 1 ? ", " : ""}</span>
+            ))}
+          </div>
+        )}
+      </div>
+    );
   }
 
   const STATUS_COLORS: Record<string, string> = {
@@ -441,7 +521,16 @@ export default function MailboxesPage() {
                         : <ChevronRight size={14} className="text-gray-400 inline" />}
                     </td>
                     <td className="px-4 py-3">{j.domain}</td>
-                    <td className="px-4 py-3">{j.mailbox_count}</td>
+                    <td className="px-4 py-3">
+                      {(() => {
+                        const counts = getActualCount(j);
+                        if (counts && counts.mismatch) {
+                          const color = counts.actual === 0 ? "text-red-600" : "text-yellow-600";
+                          return <span className={`font-medium ${color}`}>{counts.actual}/{counts.requested}</span>;
+                        }
+                        return j.mailbox_count;
+                      })()}
+                    </td>
                     <td className="px-4 py-3">
                       <span className={`px-2 py-1 rounded-full text-xs font-medium ${STATUS_COLORS[j.status] || ""}`}>
                         {j.status}
@@ -459,23 +548,39 @@ export default function MailboxesPage() {
                             <StopCircle size={16} className="text-red-500" />
                           </button>
                         )}
-                        {j.status === "complete" && (
+                        {(j.status === "complete" || j.status === "failed") && (
                           <>
-                            {j.dkim_enabled ? (
-                              <span className="p-1" title="DKIM enabled">
-                                <ShieldCheck size={16} className="text-green-600" />
-                              </span>
-                            ) : dkimLoading.has(j.id) ? (
-                              <span className="p-1" title="Enabling DKIM...">
-                                <Loader2 size={16} className="text-purple-500 animate-spin" />
+                            {healthLoading.has(j.id) ? (
+                              <span className="p-1" title="Checking mailboxes...">
+                                <Loader2 size={16} className="text-pink-500 animate-spin" />
                               </span>
                             ) : (
                               <button
-                                onClick={() => handleEnableDkim(j.id)}
-                                className="p-1 hover:bg-purple-50 rounded" title="Enable DKIM"
+                                onClick={() => handleHealthCheck(j.id)}
+                                className="p-1 hover:bg-pink-50 rounded" title="Health check mailboxes"
                               >
-                                <Shield size={16} className="text-purple-500" />
+                                <HeartPulse size={16} className="text-pink-500" />
                               </button>
+                            )}
+                            {j.status === "complete" && (
+                              <>
+                                {j.dkim_enabled ? (
+                                  <span className="p-1" title="DKIM enabled">
+                                    <ShieldCheck size={16} className="text-green-600" />
+                                  </span>
+                                ) : dkimLoading.has(j.id) ? (
+                                  <span className="p-1" title="Enabling DKIM...">
+                                    <Loader2 size={16} className="text-purple-500 animate-spin" />
+                                  </span>
+                                ) : (
+                                  <button
+                                    onClick={() => handleEnableDkim(j.id)}
+                                    className="p-1 hover:bg-purple-50 rounded" title="Enable DKIM"
+                                  >
+                                    <Shield size={16} className="text-purple-500" />
+                                  </button>
+                                )}
+                              </>
                             )}
                             <button
                               onClick={() => handleExport(j.tenant_id)}
@@ -496,6 +601,9 @@ export default function MailboxesPage() {
                           jobStatus={j.status}
                           currentStep={parseCurrentStep(j.current_phase)}
                         />
+                        {healthResults[j.id] && (
+                          <HealthCheckBanner result={healthResults[j.id]} />
+                        )}
                         {j.error_message && (
                           <div className="mt-2 p-3 bg-red-50 rounded text-xs text-red-700 font-mono whitespace-pre-wrap max-h-40 overflow-auto">
                             {j.error_message}

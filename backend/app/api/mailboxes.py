@@ -399,6 +399,19 @@ async def stop_job(job_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
     return {"status": "stopped"}
 
 
+@jobs_router.post("/{job_id}/health-check")
+async def health_check_mailboxes(job_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
+    job = await db.get(MailboxJob, job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    if job.status not in ("complete", "failed"):
+        raise HTTPException(status_code=409, detail="Job must be complete or failed to run health check")
+
+    from app.tasks.mailbox_pipeline import run_mailbox_health_check
+    run_mailbox_health_check.delay(str(job.id))
+    return {"status": "queued"}
+
+
 @jobs_router.post("/{job_id}/enable-dkim")
 async def enable_dkim(job_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
     job = await db.get(MailboxJob, job_id)

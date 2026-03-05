@@ -92,6 +92,19 @@ export interface BulkMailboxResult {
   errors: { tenant_id: string; error: string }[];
 }
 
+export interface MailboxHealthResult {
+  job_id: string;
+  status: "running" | "complete" | "error";
+  total_in_db?: number;
+  found_in_exchange?: number;
+  missing?: string[];
+  extra_in_exchange?: string[];
+  smtp_tested?: number;
+  smtp_ok?: number;
+  smtp_failed?: { email: string; error: string }[];
+  error?: string;
+}
+
 export interface Alert {
   id: number;
   tenant_id: string;

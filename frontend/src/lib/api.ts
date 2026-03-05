@@ -84,6 +84,7 @@ export const api = {
   listMailboxJobs: () => request<{ jobs: any[] }>("/api/v1/mailbox-jobs"),
   stopJob: (jobId: string) => request(`/api/v1/mailbox-jobs/${jobId}/stop`, { method: "POST" }),
   enableDkim: (jobId: string) => request<{ status: string }>(`/api/v1/mailbox-jobs/${jobId}/enable-dkim`, { method: "POST" }),
+  healthCheckMailboxes: (jobId: string) => request<{ status: string }>(`/api/v1/mailbox-jobs/${jobId}/health-check`, { method: "POST" }),
 
   // Monitor
   dashboard: () => request<any>("/api/v1/monitor/dashboard"),

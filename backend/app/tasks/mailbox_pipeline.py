@@ -8,6 +8,7 @@ Steps: assign-license, enable-org-smtp, add-domain, verify-domain,
 
 import logging
 import os
+import smtplib
 import tempfile
 import time
 import traceback
@@ -25,6 +26,32 @@ from app.websocket import publish_event_sync
 
 logger = logging.getLogger(__name__)
 sync_engine = create_engine(settings.database_url_sync, pool_pre_ping=True, pool_recycle=3600)
+
+
+def _parse_ps_markers(stdout: str, success_markers: list[str], fail_marker: str = "FAILED:"):
+    """Parse PowerShell stdout for success/failure markers.
+
+    Returns (succeeded: dict[marker -> set[email]], failed: list[tuple[email, reason]])
+    """
+    succeeded: dict[str, set[str]] = {m: set() for m in success_markers}
+    failed: list[tuple[str, str]] = []
+    for line in stdout.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        for marker in success_markers:
+            if line.startswith(marker):
+                email = line[len(marker):].strip()
+                succeeded[marker].add(email.lower())
+                break
+        else:
+            if line.startswith(fail_marker):
+                rest = line[len(fail_marker):].strip()
+                parts = rest.split(" - ", 1)
+                email = parts[0].strip().lower()
+                reason = parts[1].strip() if len(parts) > 1 else "Unknown error"
+                failed.append((email, reason))
+    return succeeded, failed
 
 STEPS = [
     "Assign License", "Enable Org SMTP", "Add Domain", "Verify Domain",
@@ -401,7 +428,13 @@ def run_mailbox_pipeline(self, job_id: str):
 
             stdout, _ = ps.run_batched(commands, batch_size=10, timeout=600)
 
-            # Parse results and save to DB
+            # Parse PowerShell output markers
+            succeeded, failed_list = _parse_ps_markers(stdout, ["CREATED:", "EXISTS:"])
+            created_emails = succeeded["CREATED:"]
+            exists_emails = succeeded["EXISTS:"]
+            ok_emails = created_emails | exists_emails
+
+            # Only save mailboxes that actually succeeded
             with Session(sync_engine) as db:
                 dom = db.execute(
                     select(Domain).where(Domain.tenant_id == tenant_id, Domain.domain == domain)
@@ -409,6 +442,8 @@ def run_mailbox_pipeline(self, job_id: str):
                 domain_id = dom.id if dom else None
 
                 for mb in identities:
+                    if mb["email"].lower() not in ok_emails:
+                        continue
                     existing = db.execute(
                         select(Mailbox).where(Mailbox.email == mb["email"])
                     ).scalar_one_or_none()
@@ -421,7 +456,22 @@ def run_mailbox_pipeline(self, job_id: str):
                             password=encrypt(mb["password"]),
                         ))
                 db.commit()
-            _record_step_result(job_id, 7, "success")
+
+            # Build step result detail
+            detail = f"Created: {len(created_emails)}, Existed: {len(exists_emails)}, Failed: {len(failed_list)}"
+            if failed_list:
+                detail += "\n" + "\n".join(f"  {email} - {reason}" for email, reason in failed_list[:20])
+
+            # Filter identities to only those that succeeded (for steps 8 & 9)
+            identities = [mb for mb in identities if mb["email"].lower() in ok_emails]
+
+            if len(ok_emails) == 0 and failed_list:
+                _record_step_result(job_id, 7, "failed", detail)
+                raise RuntimeError(f"All {len(failed_list)} mailboxes failed to create")
+            elif failed_list:
+                _record_step_result(job_id, 7, "warning", detail)
+            else:
+                _record_step_result(job_id, 7, "success", detail)
         except Exception as e:
             _record_step_result(job_id, 7, "failed", str(e))
             raise
@@ -440,17 +490,32 @@ def run_mailbox_pipeline(self, job_id: str):
                     f"Write-Host 'FAILED: {mb['email']} - ' $_.Exception.Message "
                     f"}}"
                 )
-            ps.run_batched(smtp_commands, batch_size=10, timeout=600)
+            smtp_stdout, _ = ps.run_batched(smtp_commands, batch_size=10, timeout=600)
+
+            smtp_succeeded, smtp_failed = _parse_ps_markers(smtp_stdout, ["ENABLED:"])
+            enabled_emails = smtp_succeeded["ENABLED:"]
 
             with Session(sync_engine) as db:
                 for mb in identities:
+                    if mb["email"].lower() not in enabled_emails:
+                        continue
                     existing = db.execute(
                         select(Mailbox).where(Mailbox.email == mb["email"])
                     ).scalar_one_or_none()
                     if existing:
                         existing.smtp_enabled = True
                 db.commit()
-            _record_step_result(job_id, 8, "success")
+
+            smtp_detail = f"Enabled: {len(enabled_emails)}, Failed: {len(smtp_failed)}"
+            if smtp_failed:
+                smtp_detail += "\n" + "\n".join(f"  {email} - {reason}" for email, reason in smtp_failed[:20])
+
+            if smtp_failed and not enabled_emails:
+                _record_step_result(job_id, 8, "failed", smtp_detail)
+            elif smtp_failed:
+                _record_step_result(job_id, 8, "warning", smtp_detail)
+            else:
+                _record_step_result(job_id, 8, "success", smtp_detail)
         except Exception as e:
             _record_step_result(job_id, 8, "warning", str(e))
             logger.warning(f"Step 8 SMTP warning: {e}")
@@ -470,8 +535,21 @@ def run_mailbox_pipeline(self, job_id: str):
                     f"Write-Host 'FAILED: {mb['email']} - ' $_.Exception.Message "
                     f"}}"
                 )
-            ps.run_batched(cal_commands, batch_size=10, timeout=600)
-            _record_step_result(job_id, 9, "success")
+            cal_stdout, _ = ps.run_batched(cal_commands, batch_size=10, timeout=600)
+
+            cal_succeeded, cal_failed = _parse_ps_markers(cal_stdout, ["CONFIGURED:"])
+            configured_emails = cal_succeeded["CONFIGURED:"]
+
+            cal_detail = f"Configured: {len(configured_emails)}, Failed: {len(cal_failed)}"
+            if cal_failed:
+                cal_detail += "\n" + "\n".join(f"  {email} - {reason}" for email, reason in cal_failed[:20])
+
+            if cal_failed and not configured_emails:
+                _record_step_result(job_id, 9, "failed", cal_detail)
+            elif cal_failed:
+                _record_step_result(job_id, 9, "warning", cal_detail)
+            else:
+                _record_step_result(job_id, 9, "success", cal_detail)
         except Exception as e:
             _record_step_result(job_id, 9, "warning", str(e))
             logger.warning(f"Step 9 calendar warning: {e}")
@@ -650,3 +728,118 @@ def retry_pending_dkim():
                     os.unlink(pfx_path)
 
         return {"status": "done", "results": results}
+
+
+@celery_app.task(name="app.tasks.mailbox_pipeline.run_mailbox_health_check", bind=True, queue="tenant_setup",
+                 acks_late=True, reject_on_worker_lost=True)
+def run_mailbox_health_check(self, job_id: str):
+    """Verify mailboxes from a completed job actually exist in Exchange and can authenticate via SMTP."""
+    pfx_path = None
+    try:
+        with Session(sync_engine) as db:
+            job = db.get(MailboxJob, job_id)
+            if not job:
+                publish_event_sync("mailbox_health_check", {"job_id": job_id, "status": "error", "error": "Job not found"})
+                return {"status": "error", "reason": "job_not_found"}
+
+            tenant_id = str(job.tenant_id)
+            domain = job.domain
+
+            # Get all DB mailboxes for this tenant + domain
+            db_mailboxes = db.execute(
+                select(Mailbox).where(
+                    Mailbox.tenant_id == tenant_id,
+                    Mailbox.email.like(f"%@{domain}"),
+                )
+            ).scalars().all()
+
+            db_emails = {mb.email.lower() for mb in db_mailboxes}
+            db_passwords = {}
+            for mb in db_mailboxes:
+                if mb.password:
+                    try:
+                        db_passwords[mb.email.lower()] = decrypt(mb.password)
+                    except Exception:
+                        pass
+
+        if not db_emails:
+            result = {
+                "job_id": job_id, "status": "complete",
+                "total_in_db": 0, "found_in_exchange": 0,
+                "missing": [], "extra_in_exchange": [],
+                "smtp_tested": 0, "smtp_ok": 0, "smtp_failed": [],
+            }
+            publish_event_sync("mailbox_health_check", result)
+            return result
+
+        # Publish a "running" event so the frontend shows a spinner
+        publish_event_sync("mailbox_health_check", {"job_id": job_id, "status": "running"})
+
+        tenant_data = _load_tenant_data(tenant_id)
+        pfx_path = tenant_data.get("cert_pfx_path")
+
+        from app.services.powershell import PowerShellRunner, check_pwsh_available
+        if not check_pwsh_available():
+            raise RuntimeError("PowerShell (pwsh) not available")
+
+        ps = PowerShellRunner(tenant_data)
+
+        # Get all mailboxes for this domain from Exchange in one call
+        from app.services.powershell import escape_ps_string
+        safe_domain = escape_ps_string(domain)
+        cmd = (
+            f"Get-Mailbox -ResultSize Unlimited -Filter \"PrimarySmtpAddress -like '*@{safe_domain}'\" "
+            f"| ForEach-Object {{ Write-Host \"FOUND: $($_.PrimarySmtpAddress.ToString().ToLower())\" }}"
+        )
+        stdout, _ = ps.run([cmd], timeout=120)
+
+        exchange_emails = set()
+        for line in stdout.splitlines():
+            line = line.strip()
+            if line.startswith("FOUND:"):
+                exchange_emails.add(line[len("FOUND:"):].strip().lower())
+
+        missing = sorted(db_emails - exchange_emails)
+        extra_in_exchange = sorted(exchange_emails - db_emails)
+        found = db_emails & exchange_emails
+
+        # SMTP auth test on a sample (up to 5)
+        smtp_ok = 0
+        smtp_failed = []
+        sample = sorted(found)[:5]
+        for email in sample:
+            pwd = db_passwords.get(email)
+            if not pwd:
+                continue
+            try:
+                with smtplib.SMTP("smtp.office365.com", 587, timeout=15) as server:
+                    server.starttls()
+                    server.login(email, pwd)
+                smtp_ok += 1
+            except Exception as e:
+                err_str = str(e)[:200]
+                smtp_failed.append({"email": email, "error": err_str})
+
+        result = {
+            "job_id": job_id,
+            "status": "complete",
+            "total_in_db": len(db_emails),
+            "found_in_exchange": len(found),
+            "missing": missing,
+            "extra_in_exchange": extra_in_exchange,
+            "smtp_tested": len(sample),
+            "smtp_ok": smtp_ok,
+            "smtp_failed": smtp_failed,
+        }
+        publish_event_sync("mailbox_health_check", result)
+        return result
+
+    except Exception as e:
+        logger.error(f"Mailbox health check failed for job {job_id}: {e}")
+        publish_event_sync("mailbox_health_check", {
+            "job_id": job_id, "status": "error", "error": str(e)[:500],
+        })
+        return {"status": "error", "error": str(e)}
+    finally:
+        if pfx_path and os.path.exists(pfx_path):
+            os.unlink(pfx_path)
