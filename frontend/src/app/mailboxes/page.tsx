@@ -506,7 +506,7 @@ export default function MailboxesPage() {
         </div>
       </div>
 
-      {/* Export Bar */}
+      {/* Action Bar */}
       <div className="flex items-center gap-2 mb-4">
         <button
           onClick={() => api.exportAllMailboxesCsv()}
@@ -515,12 +515,38 @@ export default function MailboxesPage() {
           <FileDown size={14} /> Export All
         </button>
         {selectedJobTenantIds.size > 0 && (
-          <button
-            onClick={() => api.exportAllMailboxesCsv(Array.from(selectedJobTenantIds))}
-            className="flex items-center gap-1.5 px-3 py-1.5 text-xs bg-blue-600 text-white rounded-lg hover:bg-blue-700"
-          >
-            <FileDown size={14} /> Export Selected ({selectedJobTenantIds.size})
-          </button>
+          <>
+            <button
+              onClick={() => api.exportAllMailboxesCsv(Array.from(selectedJobTenantIds))}
+              className="flex items-center gap-1.5 px-3 py-1.5 text-xs bg-blue-600 text-white rounded-lg hover:bg-blue-700"
+            >
+              <FileDown size={14} /> Export Selected ({selectedJobTenantIds.size})
+            </button>
+            <button
+              onClick={() => {
+                const eligibleJobs = jobs.filter(j =>
+                  selectedJobTenantIds.has(j.tenant_id) && (j.status === "complete" || j.status === "failed")
+                );
+                if (eligibleJobs.length === 0) { alert("No complete/failed jobs selected"); return; }
+                eligibleJobs.forEach(j => handleRetryMissing(j.id));
+              }}
+              className="flex items-center gap-1.5 px-3 py-1.5 text-xs bg-orange-500 text-white rounded-lg hover:bg-orange-600"
+            >
+              <RefreshCw size={14} /> Retry Missing ({jobs.filter(j => selectedJobTenantIds.has(j.tenant_id) && (j.status === "complete" || j.status === "failed")).length})
+            </button>
+            <button
+              onClick={() => {
+                const eligibleJobs = jobs.filter(j =>
+                  selectedJobTenantIds.has(j.tenant_id) && (j.status === "complete" || j.status === "failed")
+                );
+                if (eligibleJobs.length === 0) { alert("No complete/failed jobs selected"); return; }
+                eligibleJobs.forEach(j => handleHealthCheck(j.id));
+              }}
+              className="flex items-center gap-1.5 px-3 py-1.5 text-xs bg-pink-500 text-white rounded-lg hover:bg-pink-600"
+            >
+              <HeartPulse size={14} /> Health Check ({jobs.filter(j => selectedJobTenantIds.has(j.tenant_id) && (j.status === "complete" || j.status === "failed")).length})
+            </button>
+          </>
         )}
       </div>
 
