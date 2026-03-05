@@ -24,6 +24,7 @@ class MailboxCreateRequest(BaseModel):
     mailbox_count: int = 50
     cf_email: str | None = None
     cf_api_key: str | None = None
+    custom_names: list[str] | None = None
 
     @field_validator("domain")
     @classmethod
@@ -38,6 +39,20 @@ class MailboxCreateRequest(BaseModel):
     def validate_mailbox_count(cls, v: int) -> int:
         if v < 1 or v > 500:
             raise ValueError("mailbox_count must be between 1 and 500")
+        return v
+
+    @field_validator("custom_names")
+    @classmethod
+    def validate_custom_names(cls, v: list[str] | None) -> list[str] | None:
+        if v is None:
+            return v
+        v = [n.strip() for n in v if n.strip()]
+        if not v:
+            return None
+        for name in v:
+            parts = name.split()
+            if len(parts) < 2:
+                raise ValueError(f"Each name must have first and last name: '{name}'")
         return v
 
 
@@ -111,6 +126,7 @@ class BulkMailboxItem(BaseModel):
     mailbox_count: int = 50
     cf_email: str | None = None
     cf_api_key: str | None = None
+    custom_names: list[str] | None = None
 
     @field_validator("domain")
     @classmethod
@@ -125,6 +141,20 @@ class BulkMailboxItem(BaseModel):
     def validate_mailbox_count(cls, v: int) -> int:
         if v < 1 or v > 500:
             raise ValueError("mailbox_count must be between 1 and 500")
+        return v
+
+    @field_validator("custom_names")
+    @classmethod
+    def validate_custom_names(cls, v: list[str] | None) -> list[str] | None:
+        if v is None:
+            return v
+        v = [n.strip() for n in v if n.strip()]
+        if not v:
+            return None
+        for name in v:
+            parts = name.split()
+            if len(parts) < 2:
+                raise ValueError(f"Each name must have first and last name: '{name}'")
         return v
 
 
@@ -170,6 +200,7 @@ async def _bulk_create_jobs(items: list[BulkMailboxItem], shared_cf_email: str |
             mailbox_count=item.mailbox_count,
             cf_email=cf_email,
             cf_api_key=encrypt(cf_api_key) if cf_api_key else None,
+            custom_names=item.custom_names,
             status="queued",
             current_phase="Queued",
         )
@@ -234,7 +265,14 @@ async def bulk_create_mailboxes_csv(
             errors.append({"tenant_id": tenant_email, "error": "Tenant not found for this email"})
             continue
 
-        items.append(BulkMailboxItem(tenant_id=str(tenant.id), domain=domain, mailbox_count=count_val))
+        # Parse optional custom_names column (pipe-delimited)
+        custom_names_str = row.get("custom_names", "").strip()
+        custom_names = [n.strip() for n in custom_names_str.split("|") if n.strip()] if custom_names_str else None
+
+        items.append(BulkMailboxItem(
+            tenant_id=str(tenant.id), domain=domain, mailbox_count=count_val,
+            custom_names=custom_names,
+        ))
 
     if not items and errors:
         return {"created": 0, "jobs": [], "errors": errors}
@@ -346,6 +384,7 @@ async def create_mailboxes(
         mailbox_count=body.mailbox_count,
         cf_email=body.cf_email,
         cf_api_key=encrypt(body.cf_api_key) if body.cf_api_key else None,
+        custom_names=body.custom_names,
         status="queued",
         current_phase="Queued",
     )

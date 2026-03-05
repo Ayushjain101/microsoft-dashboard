@@ -20,6 +20,8 @@ export default function MailboxesPage() {
   const [count, setCount] = useState(50);
   const [cfEmail, setCfEmail] = useState("");
   const [cfApiKey, setCfApiKey] = useState("");
+  const [nameMode, setNameMode] = useState<"random" | "custom">("random");
+  const [customNamesText, setCustomNamesText] = useState("");
 
   // CSV state
   const [csvFile, setCsvFile] = useState<File | null>(null);
@@ -146,10 +148,19 @@ export default function MailboxesPage() {
     setLoading(true);
     setResult(null);
     try {
+      const customNames = nameMode === "custom"
+        ? customNamesText.split("\n").map(n => n.trim()).filter(Boolean)
+        : undefined;
+      if (nameMode === "custom" && (!customNames || customNames.length === 0)) {
+        alert("Please enter at least one name (First Last) for custom mode");
+        setLoading(false);
+        return;
+      }
       const items = Array.from(selectedTenants).map(id => ({
         tenant_id: id,
         domain: domainMap[id].trim(),
         mailbox_count: count,
+        ...(customNames ? { custom_names: customNames } : {}),
       }));
       const res = await api.bulkCreateMailboxes(items, cfEmail || undefined, cfApiKey || undefined);
       setResult(res);
@@ -457,6 +468,62 @@ export default function MailboxesPage() {
                 </div>
               )}
 
+              {/* Name Mode */}
+              <div className="mb-4">
+                <label className="block text-sm font-medium mb-2">Account Names</label>
+                <div className="flex items-center gap-4 mb-2">
+                  <label className="flex items-center gap-1.5 text-sm cursor-pointer">
+                    <input
+                      type="radio"
+                      name="nameMode"
+                      value="random"
+                      checked={nameMode === "random"}
+                      onChange={() => setNameMode("random")}
+                    />
+                    Random Names
+                  </label>
+                  <label className="flex items-center gap-1.5 text-sm cursor-pointer">
+                    <input
+                      type="radio"
+                      name="nameMode"
+                      value="custom"
+                      checked={nameMode === "custom"}
+                      onChange={() => setNameMode("custom")}
+                    />
+                    Custom Names
+                  </label>
+                </div>
+                {nameMode === "custom" && (
+                  <div>
+                    <textarea
+                      value={customNamesText}
+                      onChange={e => setCustomNamesText(e.target.value)}
+                      placeholder={"Enter names, one per line:\nAyush Baldota\nVishwajeet Jadeja"}
+                      rows={4}
+                      className="w-full px-3 py-2 border rounded-lg text-sm font-mono"
+                    />
+                    {(() => {
+                      const names = customNamesText.split("\n").map(n => n.trim()).filter(Boolean);
+                      if (names.length === 0) return null;
+                      const perName = Math.floor(count / names.length);
+                      const remainder = count % names.length;
+                      const allocation = names.map((_, i) => perName + (i < remainder ? 1 : 0));
+                      return (
+                        <p className="text-xs text-gray-500 mt-1">
+                          {names.length} name{names.length > 1 ? "s" : ""} &rarr; {allocation.join("/")} mailboxes each
+                          {count > 0 && names.length > count && (
+                            <span className="text-red-500 ml-2">Warning: more names than mailboxes</span>
+                          )}
+                          {perName > 50 && (
+                            <span className="text-yellow-600 ml-2">Warning: {perName}+ variations per name may exceed limits</span>
+                          )}
+                        </p>
+                      );
+                    })()}
+                  </div>
+                )}
+              </div>
+
               <div className="grid grid-cols-3 gap-4">
                 <div>
                   <label className="block text-sm font-medium mb-1">Mailbox Count</label>
@@ -509,7 +576,7 @@ export default function MailboxesPage() {
                   className="w-full px-3 py-2 border rounded-lg text-sm"
                 />
                 <p className="text-xs text-gray-400 mt-1">
-                  Expected columns: <code className="bg-gray-100 px-1 rounded">tenant_email, domain, count</code> (count is optional, defaults to 50)
+                  Expected columns: <code className="bg-gray-100 px-1 rounded">tenant_email, domain, count, custom_names</code> (count defaults to 50, custom_names is optional, pipe-delimited e.g. &quot;John Doe|Jane Smith&quot;)
                 </p>
               </div>
               <div className="grid grid-cols-2 gap-4">

@@ -63,7 +63,7 @@ export const api = {
   listMailboxes: (tenantId: string) => request<{ mailboxes: any[] }>(`/api/v1/mailboxes/${tenantId}`),
   createMailboxes: (tenantId: string, data: { domain: string; mailbox_count: number; cf_email?: string; cf_api_key?: string }) =>
     request(`/api/v1/mailboxes/${tenantId}/create`, { method: "POST", body: JSON.stringify(data) }),
-  bulkCreateMailboxes: (items: { tenant_id: string; domain: string; mailbox_count: number }[], cfEmail?: string, cfApiKey?: string) =>
+  bulkCreateMailboxes: (items: { tenant_id: string; domain: string; mailbox_count: number; custom_names?: string[] }[], cfEmail?: string, cfApiKey?: string) =>
     request<import("./types").BulkMailboxResult>("/api/v1/mailboxes/bulk-create", {
       method: "POST",
       body: JSON.stringify({ items, cf_email: cfEmail || undefined, cf_api_key: cfApiKey || undefined }),

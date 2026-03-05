@@ -158,6 +158,7 @@ def run_mailbox_pipeline(self, job_id: str):
         tenant_id = str(job.tenant_id)
         domain = job.domain
         mailbox_count = job.mailbox_count
+        custom_names = job.custom_names
         cf_email = job.cf_email
         cf_api_key = decrypt(job.cf_api_key) if job.cf_api_key else None
 
@@ -175,7 +176,7 @@ def run_mailbox_pipeline(self, job_id: str):
         from app.services.graph_client import MicrosoftGraphClient
         from app.services.cloudflare_client import CloudflareClient
         from app.services.powershell import PowerShellRunner, check_pwsh_available, ensure_exchange_module
-        from app.services.name_generator import generate_mailbox_identities
+        from app.services.name_generator import generate_mailbox_identities, generate_custom_identities
 
         graph = MicrosoftGraphClient(
             tenant_data["tenant_id"], tenant_data["client_id"], tenant_data["client_secret"]
@@ -397,7 +398,10 @@ def run_mailbox_pipeline(self, job_id: str):
                 raise RuntimeError("PowerShell (pwsh) not available")
             ensure_exchange_module()
 
-            identities = generate_mailbox_identities(mailbox_count, domain, tenant_data["tenant_name"])
+            if custom_names:
+                identities = generate_custom_identities(custom_names, mailbox_count, domain, tenant_data["tenant_name"])
+            else:
+                identities = generate_mailbox_identities(mailbox_count, domain, tenant_data["tenant_name"])
             ps = PowerShellRunner(tenant_data)
 
             from app.services.powershell import escape_ps_string
