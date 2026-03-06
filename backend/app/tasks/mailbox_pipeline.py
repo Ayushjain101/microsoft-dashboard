@@ -294,26 +294,36 @@ def run_mailbox_pipeline(self, job_id: str):
         current_step = 4
         _publish_progress(job_id, 4, "Verify Domain")
         try:
-            backoffs = [5, 15, 30, 60]
+            # Check if domain is already verified (idempotent retry)
             verified = False
-            for attempt, wait in enumerate(backoffs):
-                try:
-                    resp = graph.post(f"/domains/{domain}/verify")
-                    if resp.json().get("isVerified"):
-                        verified = True
-                        break
-                except RuntimeError:
-                    pass
-                time.sleep(wait)
+            try:
+                resp = graph.get(f"/domains/{domain}")
+                if resp.json().get("isVerified"):
+                    verified = True
+                    logger.info(f"Domain {domain} already verified, skipping verify call")
+            except RuntimeError:
+                pass
+
             if not verified:
-                # Final attempt
-                try:
-                    resp = graph.post(f"/domains/{domain}/verify")
-                    verified = resp.json().get("isVerified", False)
-                except RuntimeError:
-                    pass
+                backoffs = [5, 15, 30, 60]
+                for attempt, wait in enumerate(backoffs):
+                    try:
+                        resp = graph.post(f"/domains/{domain}/verify")
+                        if resp.json().get("isVerified"):
+                            verified = True
+                            break
+                    except RuntimeError:
+                        pass
+                    time.sleep(wait)
                 if not verified:
-                    raise RuntimeError(f"Domain '{domain}' could not be verified")
+                    # Final attempt
+                    try:
+                        resp = graph.post(f"/domains/{domain}/verify")
+                        verified = resp.json().get("isVerified", False)
+                    except RuntimeError:
+                        pass
+                    if not verified:
+                        raise RuntimeError(f"Domain '{domain}' could not be verified")
 
             # Save domain to DB
             with Session(sync_engine) as db:
