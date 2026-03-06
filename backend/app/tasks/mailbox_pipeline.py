@@ -272,10 +272,22 @@ def run_mailbox_pipeline(self, job_id: str):
 
             for rec in verification_records:
                 if rec.get("recordType") == "Txt":
-                    cf.upsert_dns_record(domain, "TXT", domain, rec.get("text", ""), proxied=False)
+                    try:
+                        cf.upsert_dns_record(domain, "TXT", domain, rec.get("text", ""), proxied=False)
+                    except RuntimeError as e:
+                        if "already exists" in str(e).lower():
+                            pass  # Record already present from previous run
+                        else:
+                            raise
 
             mx_host = domain.replace(".", "-") + ".mail.protection.outlook.com"
-            cf.upsert_dns_record(domain, "MX", domain, mx_host, priority=0, proxied=False)
+            try:
+                cf.upsert_dns_record(domain, "MX", domain, mx_host, priority=0, proxied=False)
+            except RuntimeError as e:
+                if "already exists" in str(e).lower():
+                    pass
+                else:
+                    raise
 
             spf_value = "v=spf1 include:spf.protection.outlook.com -all"
             try:
@@ -283,8 +295,14 @@ def run_mailbox_pipeline(self, job_id: str):
             except RuntimeError:
                 pass  # May already exist
 
-            cf.upsert_dns_record(domain, "CNAME", f"autodiscover.{domain}",
-                                 "autodiscover.outlook.com", proxied=False)
+            try:
+                cf.upsert_dns_record(domain, "CNAME", f"autodiscover.{domain}",
+                                     "autodiscover.outlook.com", proxied=False)
+            except RuntimeError as e:
+                if "already exists" in str(e).lower():
+                    pass
+                else:
+                    raise
             _record_step_result(job_id, 3, "success")
         except Exception as e:
             _record_step_result(job_id, 3, "failed", str(e))
