@@ -1,12 +1,21 @@
 "use client";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { Server, Mail, Activity, KeyRound, Settings, LogOut, ScrollText } from "lucide-react";
+import {
+  Server,
+  Mail,
+  Activity,
+  KeyRound,
+  Settings,
+  LogOut,
+  ScrollText,
+  LayoutDashboard,
+} from "lucide-react";
 import { api } from "@/lib/api";
 import { useRouter } from "next/navigation";
 
 const navItems = [
-  { href: "/tenants", label: "Tenant Setup", icon: Server },
+  { href: "/tenants", label: "Tenants", icon: Server },
   { href: "/mailboxes", label: "Mailboxes", icon: Mail },
   { href: "/monitor", label: "Monitoring", icon: Activity },
   { href: "/totp", label: "TOTP Vault", icon: KeyRound },
@@ -24,35 +33,46 @@ export default function Sidebar() {
   }
 
   return (
-    <aside className="w-64 bg-gray-900 text-white min-h-screen flex flex-col">
-      <div className="p-6 border-b border-gray-800">
-        <h1 className="text-lg font-bold">Tenant Dashboard</h1>
-        <p className="text-xs text-gray-400 mt-1">Microsoft 365 Automation</p>
+    <aside className="w-60 bg-gray-900 text-white min-h-screen flex flex-col border-r border-gray-800">
+      <div className="px-5 py-5 border-b border-gray-800">
+        <div className="flex items-center gap-2.5">
+          <div className="w-8 h-8 bg-blue-600 rounded-lg flex items-center justify-center">
+            <LayoutDashboard size={16} />
+          </div>
+          <div>
+            <h1 className="text-sm font-bold tracking-tight">Tenant Dashboard</h1>
+            <p className="text-[10px] text-gray-500 font-medium">Microsoft 365</p>
+          </div>
+        </div>
       </div>
-      <nav className="flex-1 py-4">
+      <nav className="flex-1 py-3 px-3 space-y-0.5">
         {navItems.map(({ href, label, icon: Icon }) => {
           const active = pathname.startsWith(href);
           return (
             <Link
               key={href}
               href={href}
-              className={`flex items-center gap-3 px-6 py-3 text-sm transition-colors ${
-                active ? "bg-blue-600 text-white" : "text-gray-300 hover:bg-gray-800"
+              className={`flex items-center gap-2.5 px-3 py-2 text-[13px] rounded-lg transition-all duration-150 ${
+                active
+                  ? "bg-blue-600/90 text-white shadow-sm shadow-blue-900/50"
+                  : "text-gray-400 hover:bg-gray-800/80 hover:text-gray-200"
               }`}
             >
-              <Icon size={18} />
-              {label}
+              <Icon size={16} strokeWidth={active ? 2.5 : 2} />
+              <span className={active ? "font-semibold" : "font-medium"}>{label}</span>
             </Link>
           );
         })}
       </nav>
-      <button
-        onClick={handleLogout}
-        className="flex items-center gap-3 px-6 py-4 text-sm text-gray-400 hover:text-white border-t border-gray-800"
-      >
-        <LogOut size={18} />
-        Logout
-      </button>
+      <div className="px-3 pb-3">
+        <button
+          onClick={handleLogout}
+          className="w-full flex items-center gap-2.5 px-3 py-2 text-[13px] text-gray-500 hover:text-red-400 hover:bg-gray-800/50 rounded-lg transition-colors"
+        >
+          <LogOut size={16} />
+          <span className="font-medium">Logout</span>
+        </button>
+      </div>
     </aside>
   );
 }
