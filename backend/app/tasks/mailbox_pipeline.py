@@ -519,23 +519,32 @@ def run_mailbox_pipeline(self, job_id: str):
 
             stdout, _ = ps.run_batched(commands, batch_size=25, timeout=900)
 
-            # If many failures are due to domain not accepted, retry once after waiting
+            # Parse first-pass results
             succeeded_first, failed_first = _parse_ps_markers(stdout, ["CREATED:", "EXISTS:"])
-            domain_reject_failures = [
-                (email, reason) for email, reason in failed_first
-                if "not an accepted domain" in reason.lower()
-            ]
-            if domain_reject_failures and len(domain_reject_failures) >= len(failed_first) * 0.5:
-                logger.info(f"{len(domain_reject_failures)} mailboxes rejected due to domain not accepted, retrying after 60s...")
-                time.sleep(60)
-                # Rebuild commands only for failed emails
-                failed_emails = {email.lower() for email, _ in domain_reject_failures}
-                retry_commands = [cmd for cmd, mb in zip(commands, identities) if mb["email"].lower() in failed_emails]
-                retry_stdout, _ = ps.run_batched(retry_commands, batch_size=25, timeout=900)
-                # Merge results
-                stdout = stdout + "\n" + retry_stdout
+            ok_first = succeeded_first["CREATED:"] | succeeded_first["EXISTS:"]
 
-            # Parse PowerShell output markers (merged stdout includes retry output)
+            # Retry ALL failures (transient Exchange errors, domain not accepted, etc.)
+            # with increasing delays — up to 2 retries
+            remaining_failures = failed_first
+            for retry_attempt in range(1, 3):
+                # Filter to only failures not yet resolved
+                to_retry = [(e, r) for e, r in remaining_failures if e.lower() not in ok_first]
+                if not to_retry:
+                    break
+                # Domain-not-accepted needs longer wait; other errors need shorter
+                has_domain_reject = any("not an accepted domain" in r.lower() for _, r in to_retry)
+                wait = 60 if has_domain_reject else 15
+                logger.info(f"Step 7 retry {retry_attempt}: {len(to_retry)} failed mailboxes, waiting {wait}s...")
+                time.sleep(wait)
+                retry_emails = {e.lower() for e, _ in to_retry}
+                retry_commands = [cmd for cmd, mb in zip(commands, identities) if mb["email"].lower() in retry_emails]
+                retry_stdout, _ = ps.run_batched(retry_commands, batch_size=25, timeout=900)
+                stdout = stdout + "\n" + retry_stdout
+                # Update resolved set
+                retry_ok, remaining_failures = _parse_ps_markers(retry_stdout, ["CREATED:", "EXISTS:"])
+                ok_first |= retry_ok["CREATED:"] | retry_ok["EXISTS:"]
+
+            # Final parse of all merged output
             succeeded, failed_list = _parse_ps_markers(stdout, ["CREATED:", "EXISTS:"])
             created_emails = succeeded["CREATED:"]
             exists_emails = succeeded["EXISTS:"]
