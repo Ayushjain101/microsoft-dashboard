@@ -136,6 +136,11 @@ def _generate_alias_variations(first: str, last: str) -> list[str]:
     _add(f"{f}_{l}")
     _add(f"{l}_{f}")
 
+    # Sort longest first — short aliases (e.g. "jk", "jesk") are prone to
+    # Exchange proxy-address conflicts because Exchange auto-assigns short
+    # email prefixes as proxy addresses on other mailboxes in the same tenant.
+    variations.sort(key=lambda a: (-len(a), a))
+
     return variations
 
 

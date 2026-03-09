@@ -508,9 +508,10 @@ def run_mailbox_pipeline(self, job_id: str):
                     f"-RoomMailboxPassword $pwd; "
                     f"Write-Host 'CREATED: {mb['email']}' "
                     f"}} catch {{ "
-                    f"if ($_.Exception.Message -like '*already exists*' -or "
-                    f"$_.Exception.Message -like '*proxy address*already being used*' -or "
+                    f"if ($_.Exception.Message -like '*proxy address*already being used*' -or "
                     f"$_.Exception.Message -like '*name*already being used*') {{ "
+                    f"Write-Host 'PROXY: {mb['email']}' "
+                    f"}} elseif ($_.Exception.Message -like '*already exists*') {{ "
                     f"Write-Host 'EXISTS: {mb['email']}' "
                     f"}} else {{ "
                     f"Write-Host 'FAILED: {mb['email']} - ' $_.Exception.Message "
@@ -522,6 +523,73 @@ def run_mailbox_pipeline(self, job_id: str):
             # Parse first-pass results
             succeeded_first, failed_first = _parse_ps_markers(stdout, ["CREATED:", "EXISTS:"])
             ok_first = succeeded_first["CREATED:"] | succeeded_first["EXISTS:"]
+            # Detect proxy address conflicts (alias reserved by another mailbox)
+            proxy_conflicts, _ = _parse_ps_markers(stdout, ["PROXY:"])
+            proxy_emails = proxy_conflicts["PROXY:"]
+
+            # Handle proxy conflicts: swap in replacement aliases from unused variations
+            if proxy_emails and custom_names:
+                from app.services.name_generator import _generate_alias_variations
+                logger.info(f"Step 7: {len(proxy_emails)} proxy conflicts, generating replacement aliases")
+                # Build lookup: email -> identity index
+                email_to_idx = {mb["email"].lower(): i for i, mb in enumerate(identities)}
+                used_aliases = {mb["alias"] for mb in identities}
+                for conflict_email in proxy_emails:
+                    idx = email_to_idx.get(conflict_email)
+                    if idx is None:
+                        continue
+                    mb = identities[idx]
+                    # Get all variations for this name and find an unused one
+                    variations = _generate_alias_variations(mb["first_name"], mb["last_name"])
+                    replacement = None
+                    for v in variations:
+                        if v not in used_aliases:
+                            replacement = v
+                            break
+                    if replacement:
+                        used_aliases.add(replacement)
+                        new_email = f"{replacement}@{domain}"
+                        logger.info(f"Step 7: replacing proxy-conflicted {mb['email']} -> {new_email}")
+                        mb["alias"] = replacement
+                        mb["email"] = new_email
+                        email_to_idx[new_email.lower()] = idx
+                        # Rebuild command for this identity
+                        safe_pwd = escape_ps_string(mb["password"])
+                        name_label = mb['alias']
+                        unique_name = escape_ps_string(f"{name_label} ({domain_tag})")
+                        safe_display = escape_ps_string(mb['display_name'])
+                        safe_alias = escape_ps_string(f"{mb['alias']}-{domain_tag}")
+                        commands[idx] = (
+                            f"$pwd = ConvertTo-SecureString '{safe_pwd}' -AsPlainText -Force; "
+                            f"try {{ "
+                            f"New-Mailbox -Room -Name '{unique_name}' "
+                            f"-DisplayName '{safe_display}' "
+                            f"-Alias '{safe_alias}' "
+                            f"-PrimarySmtpAddress '{mb['email']}' "
+                            f"-EnableRoomMailboxAccount $true "
+                            f"-MicrosoftOnlineServicesID '{mb['email']}' "
+                            f"-RoomMailboxPassword $pwd; "
+                            f"Write-Host 'CREATED: {mb['email']}' "
+                            f"}} catch {{ "
+                            f"if ($_.Exception.Message -like '*proxy address*already being used*' -or "
+                            f"$_.Exception.Message -like '*name*already being used*') {{ "
+                            f"Write-Host 'PROXY: {mb['email']}' "
+                            f"}} elseif ($_.Exception.Message -like '*already exists*') {{ "
+                            f"Write-Host 'EXISTS: {mb['email']}' "
+                            f"}} else {{ "
+                            f"Write-Host 'FAILED: {mb['email']} - ' $_.Exception.Message "
+                            f"}} }}"
+                        )
+                    else:
+                        logger.warning(f"Step 7: no replacement alias available for {mb['email']}")
+                # Re-run only the replacement commands
+                replacement_cmds = [commands[email_to_idx[e]] for e in proxy_emails
+                                    if e in email_to_idx and identities[email_to_idx[e]]["email"].lower() != e]
+                if replacement_cmds:
+                    repl_stdout, _ = ps.run_batched(replacement_cmds, batch_size=25, timeout=900)
+                    stdout = stdout + "\n" + repl_stdout
+                    repl_ok, _ = _parse_ps_markers(repl_stdout, ["CREATED:", "EXISTS:"])
+                    ok_first |= repl_ok["CREATED:"] | repl_ok["EXISTS:"]
 
             # Retry ALL failures (transient Exchange errors, domain not accepted, etc.)
             # with increasing delays — up to 2 retries
@@ -549,8 +617,10 @@ def run_mailbox_pipeline(self, job_id: str):
             created_emails = succeeded["CREATED:"]
             exists_emails = succeeded["EXISTS:"]
             ok_emails = created_emails | exists_emails
-            # Remove failures for emails that succeeded on retry
+            # Remove failures for emails that succeeded on retry (including proxy replacements)
             failed_list = [(e, r) for e, r in failed_list if e.lower() not in ok_emails]
+            # Remove proxy conflicts that were resolved with replacement aliases
+            failed_list = [(e, r) for e, r in failed_list if e.lower() not in proxy_emails or e.lower() in ok_emails]
 
             # Only save mailboxes that actually succeeded
             with Session(sync_engine) as db:
@@ -1218,9 +1288,10 @@ def retry_missing_mailboxes(self, job_id: str):
                 f"-RoomMailboxPassword $pwd; "
                 f"Write-Host 'CREATED: {mb['email']}' "
                 f"}} catch {{ "
-                f"if ($_.Exception.Message -like '*already exists*' -or "
-                f"$_.Exception.Message -like '*proxy address*already being used*' -or "
+                f"if ($_.Exception.Message -like '*proxy address*already being used*' -or "
                 f"$_.Exception.Message -like '*name*already being used*') {{ "
+                f"Write-Host 'PROXY: {mb['email']}' "
+                f"}} elseif ($_.Exception.Message -like '*already exists*') {{ "
                 f"Write-Host 'EXISTS: {mb['email']}' "
                 f"}} else {{ "
                 f"Write-Host 'FAILED: {mb['email']} - ' $_.Exception.Message "
@@ -1244,6 +1315,10 @@ def retry_missing_mailboxes(self, job_id: str):
         # Retry any individual failures up to 2 times
         succeeded_first, failed_first = _parse_ps_markers(create_stdout, ["CREATED:", "EXISTS:"])
         ok_so_far = succeeded_first["CREATED:"] | succeeded_first["EXISTS:"]
+        # Detect proxy conflicts — these need replacement aliases, not retries
+        proxy_first, _ = _parse_ps_markers(create_stdout, ["PROXY:"])
+        proxy_emails = proxy_first["PROXY:"]
+
         remaining = failed_first
         for retry_num in range(1, 3):
             to_retry = [(e, r) for e, r in remaining if e.lower() not in ok_so_far]
@@ -1258,11 +1333,78 @@ def retry_missing_mailboxes(self, job_id: str):
             retry_ok, remaining = _parse_ps_markers(retry_out, ["CREATED:", "EXISTS:"])
             ok_so_far |= retry_ok["CREATED:"] | retry_ok["EXISTS:"]
 
+        # Handle proxy conflicts: generate replacement aliases
+        if proxy_emails and is_custom_names:
+            from app.services.name_generator import _generate_alias_variations
+            logger.info(f"Retry-missing: {len(proxy_emails)} proxy conflicts, generating replacements")
+            email_to_idx = {mb["email"].lower(): i for i, mb in enumerate(missing_list)}
+            used_aliases = {mb["alias"] for mb in missing_list} | {e.split("@")[0] for e in exchange_emails}
+            replacement_cmds = []
+            for conflict_email in proxy_emails:
+                idx = email_to_idx.get(conflict_email)
+                if idx is None:
+                    continue
+                mb = missing_list[idx]
+                first = mb["display_name"].split()[0] if " " in mb["display_name"] else mb["display_name"]
+                last = mb["display_name"].split()[-1] if " " in mb["display_name"] else "User"
+                variations = _generate_alias_variations(first, last)
+                replacement = None
+                for v in variations:
+                    if v not in used_aliases:
+                        replacement = v
+                        break
+                if replacement:
+                    used_aliases.add(replacement)
+                    old_email = mb["email"].lower()
+                    new_email = f"{replacement}@{domain}"
+                    logger.info(f"Retry-missing: replacing proxy-conflicted {old_email} -> {new_email}")
+                    mb["alias"] = replacement
+                    mb["email"] = new_email
+                    # Update db_map so the new email can be saved to DB
+                    db_map[new_email.lower()] = mb
+                    # Remove old conflicted email from DB if it exists
+                    with Session(sync_engine) as db_sess:
+                        old_mb = db_sess.execute(
+                            select(Mailbox).where(Mailbox.email == old_email)
+                        ).scalar_one_or_none()
+                        if old_mb:
+                            db_sess.delete(old_mb)
+                            db_sess.commit()
+                    safe_pwd = escape_ps_string(mb["password"])
+                    name_label = mb['alias'] if is_custom_names else mb['display_name']
+                    unique_name = escape_ps_string(f"{name_label} ({domain_tag})")
+                    safe_display = escape_ps_string(mb['display_name'])
+                    safe_alias = escape_ps_string(f"{mb['alias']}-{domain_tag}")
+                    replacement_cmds.append(
+                        f"$pwd = ConvertTo-SecureString '{safe_pwd}' -AsPlainText -Force; "
+                        f"try {{ "
+                        f"New-Mailbox -Room -Name '{unique_name}' "
+                        f"-DisplayName '{safe_display}' "
+                        f"-Alias '{safe_alias}' "
+                        f"-PrimarySmtpAddress '{mb['email']}' "
+                        f"-EnableRoomMailboxAccount $true "
+                        f"-MicrosoftOnlineServicesID '{mb['email']}' "
+                        f"-RoomMailboxPassword $pwd; "
+                        f"Write-Host 'CREATED: {mb['email']}' "
+                        f"}} catch {{ "
+                        f"Write-Host 'FAILED: {mb['email']} - ' $_.Exception.Message "
+                        f"}} }}"
+                    )
+                else:
+                    logger.warning(f"Retry-missing: no replacement alias for {mb['email']}")
+            if replacement_cmds:
+                repl_out, _ = ps.run_batched(replacement_cmds, batch_size=25, timeout=900)
+                create_stdout = create_stdout + "\n" + repl_out
+                repl_ok, _ = _parse_ps_markers(repl_out, ["CREATED:", "EXISTS:"])
+                ok_so_far |= repl_ok["CREATED:"] | repl_ok["EXISTS:"]
+
         succeeded, failed_list = _parse_ps_markers(create_stdout, ["CREATED:", "EXISTS:"])
         created_emails = succeeded["CREATED:"]
         exists_emails = succeeded["EXISTS:"]
         ok_emails = created_emails | exists_emails
         failed_list = [(e, r) for e, r in failed_list if e.lower() not in ok_emails]
+        # Don't count proxy conflicts that were resolved as failures
+        failed_list = [(e, r) for e, r in failed_list if e.lower() not in proxy_emails or e.lower() in ok_emails]
 
         # Save newly created mailboxes to DB (ones that were missing from DB, e.g. original step 7 failures)
         if created_emails:
