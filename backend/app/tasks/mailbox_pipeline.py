@@ -1094,10 +1094,47 @@ def retry_missing_mailboxes(self, job_id: str):
                 exchange_emails.add(line[len("FOUND:"):].strip().lower())
 
         missing_emails = set(db_map.keys()) - exchange_emails
+
+        # For random-name jobs: if Exchange has fewer mailboxes than expected,
+        # generate new random identities for the shortfall (original failures
+        # were never saved to DB, so db_map doesn't know about them)
+        with Session(sync_engine) as db:
+            job_ref = db.get(MailboxJob, job_id)
+            expected_count = job_ref.mailbox_count if job_ref else 0
+            is_custom = job_ref.custom_names is not None if job_ref else False
+
+        if not is_custom and len(exchange_emails) < expected_count:
+            shortfall = expected_count - len(exchange_emails) - len(missing_emails)
+            if shortfall > 0:
+                logger.info(f"Retry job {job_id}: Exchange has {len(exchange_emails)}, "
+                            f"expected {expected_count}, generating {shortfall} new identities")
+                from app.services.name_generator import generate_mailbox_identities
+                with Session(sync_engine) as db:
+                    job_ref = db.get(MailboxJob, job_id)
+                    tenant_name = db.get(Tenant, job_ref.tenant_id).name if job_ref else "Tenant"
+                fresh = generate_mailbox_identities(shortfall, domain, tenant_name)
+                for mb in fresh:
+                    email_key = mb["email"].lower()
+                    if email_key not in db_map and email_key not in exchange_emails:
+                        db_map[email_key] = {
+                            "email": mb["email"],
+                            "display_name": mb["display_name"],
+                            "alias": mb["alias"],
+                            "password": mb["password"],
+                        }
+                        missing_emails.add(email_key)
+
         if not missing_emails:
+            # Update job count to reflect actual Exchange state
+            with Session(sync_engine) as db:
+                job_ref = db.get(MailboxJob, job_id)
+                if job_ref and len(exchange_emails) >= job_ref.mailbox_count:
+                    detail_msg = "All mailboxes already exist in Exchange"
+                else:
+                    detail_msg = f"Exchange has {len(exchange_emails)}/{expected_count} mailboxes"
             publish_event_sync("retry_missing_result", {
                 "job_id": job_id, "status": "complete", "missing_count": 0,
-                "created": 0, "failed": 0, "detail": "All mailboxes already exist in Exchange",
+                "created": 0, "failed": 0, "detail": detail_msg,
             })
             return {"status": "complete", "created": 0}
 
