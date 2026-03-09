@@ -261,6 +261,15 @@ export default function MailboxesPage() {
   }
 
   function getActualCount(job: MailboxJob): { actual: number; requested: number; mismatch: boolean } | null {
+    // Prefer health check results (reflects actual Exchange state after retries)
+    const hr = healthResults[job.id];
+    if (hr?.status === "complete" && hr.found_in_exchange != null) {
+      return {
+        actual: hr.found_in_exchange,
+        requested: job.mailbox_count,
+        mismatch: hr.found_in_exchange < job.mailbox_count,
+      };
+    }
     const step7 = job.step_results?.["7"];
     if (!step7?.detail) return null;
     const m = step7.detail.match(/Created:\s*(\d+),\s*Existed:\s*(\d+),\s*Failed:\s*(\d+)/);
