@@ -26,6 +26,12 @@ celery_app.conf.update(
         "app.tasks.mailbox_pipeline.run_mailbox_pipeline": {
             "soft_time_limit": 3000, "time_limit": 3060,   # 50/51 min (larger batches)
         },
+        "app.tasks.workflow_tasks.run_workflow_job": {
+            "soft_time_limit": 3000, "time_limit": 3060,   # 50/51 min (matches mailbox pipeline)
+        },
+        "app.tasks.workflow_tasks.retry_workflow_job": {
+            "soft_time_limit": 3000, "time_limit": 3060,
+        },
         "app.tasks.monitor.run_mailflow_check": {
             "soft_time_limit": 180, "time_limit": 210,     # 3/3.5 min
         },
@@ -43,6 +49,7 @@ celery_app.conf.update(
         "app.tasks.mailbox_pipeline.retry_missing_mailboxes": {"queue": "tenant_setup"},
         "app.tasks.mailbox_pipeline.run_mailbox_health_check": {"queue": "health_check"},
         "app.tasks.mailbox_pipeline.*": {"queue": "mailbox"},
+        "app.tasks.workflow_tasks.*": {"queue": "mailbox"},  # v2 workflow tasks default to mailbox queue
         "app.tasks.monitor.run_mailflow_check": {"queue": "health_check"},
         "app.tasks.monitor.*": {"queue": "monitor"},
     },
@@ -77,3 +84,4 @@ import app.tasks.tenant_setup  # noqa: F401, E402
 import app.tasks.mailbox_pipeline  # noqa: F401, E402
 import app.tasks.monitor  # noqa: F401, E402
 import app.tasks.tenant_health  # noqa: F401, E402
+import app.tasks.workflow_tasks  # noqa: F401, E402

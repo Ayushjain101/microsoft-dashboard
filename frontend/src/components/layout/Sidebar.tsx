@@ -1,7 +1,7 @@
 "use client";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { Server, Mail, Activity, KeyRound, Settings, LogOut } from "lucide-react";
+import { Server, Mail, Activity, KeyRound, Settings, LogOut, ScrollText } from "lucide-react";
 import { api } from "@/lib/api";
 import { useRouter } from "next/navigation";
 
@@ -10,6 +10,7 @@ const navItems = [
   { href: "/mailboxes", label: "Mailboxes", icon: Mail },
   { href: "/monitor", label: "Monitoring", icon: Activity },
   { href: "/totp", label: "TOTP Vault", icon: KeyRound },
+  { href: "/audit", label: "Audit Log", icon: ScrollText },
   { href: "/settings", label: "Settings", icon: Settings },
 ];
 

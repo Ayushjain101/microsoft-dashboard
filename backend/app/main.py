@@ -7,6 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import text
 
 from app.api import auth, mailboxes, monitor, settings as settings_api, tenants, totp, ws
+from app.api.v2 import workflows as v2_workflows, tenants as v2_tenants, mailboxes as v2_mailboxes, monitoring as v2_monitoring, ws as v2_ws
 from app.config import settings
 from app.websocket import manager
 
@@ -40,6 +41,13 @@ app.include_router(monitor.router)
 app.include_router(settings_api.router)
 app.include_router(totp.router)
 app.include_router(ws.router)
+
+# API v2 routers
+app.include_router(v2_workflows.router)
+app.include_router(v2_tenants.router)
+app.include_router(v2_mailboxes.router)
+app.include_router(v2_monitoring.router)
+app.include_router(v2_ws.router)
 
 
 @app.get("/health")

@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import "./globals.css";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
+import { QueryProvider } from "@/components/QueryProvider";
 
 export const metadata: Metadata = {
   title: "Tenant Dashboard",
@@ -11,7 +12,9 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
   return (
     <html lang="en">
       <body>
-        <ErrorBoundary>{children}</ErrorBoundary>
+        <QueryProvider>
+          <ErrorBoundary>{children}</ErrorBoundary>
+        </QueryProvider>
       </body>
     </html>
   );

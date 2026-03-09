@@ -111,4 +111,57 @@ export const api = {
   deleteCFConfig: (id: string) => request(`/api/v1/settings/cloudflare/${id}`, { method: "DELETE" }),
   getAlertSettings: () => request<any>("/api/v1/settings/alerts"),
   updateAlertSettings: (data: any) => request("/api/v1/settings/alerts", { method: "PUT", body: JSON.stringify(data) }),
+
+  // ── API v2: Workflows ──────────────────────────────────────
+  v2: {
+    // Workflows
+    getWorkflow: (jobId: string) =>
+      request<import("./types").WorkflowJob>(`/api/v2/workflows/${jobId}`),
+    retryWorkflow: (jobId: string, stepIndex?: number) =>
+      request<import("./types").WorkflowJob>(`/api/v2/workflows/${jobId}/retry`, {
+        method: "POST",
+        body: JSON.stringify(stepIndex !== undefined ? { step_index: stepIndex } : {}),
+      }),
+    cancelWorkflow: (jobId: string) =>
+      request<{ status: string }>(`/api/v2/workflows/${jobId}/cancel`, { method: "POST" }),
+    retryStep: (jobId: string, stepIndex: number) =>
+      request<import("./types").WorkflowJob>(`/api/v2/workflows/${jobId}/steps/${stepIndex}/retry`, {
+        method: "POST",
+      }),
+
+    // Tenant workflows
+    startTenantSetup: (tenantId: string) =>
+      request<import("./types").WorkflowJob>(`/api/v2/tenants/${tenantId}/setup`, { method: "POST" }),
+    startMailboxPipeline: (tenantId: string, data: {
+      domain: string;
+      mailbox_count?: number;
+      cf_email?: string;
+      cf_api_key?: string;
+      custom_names?: string[];
+    }) =>
+      request<import("./types").WorkflowJob>(
+        `/api/v2/tenants/${tenantId}/mailboxes?domain=${encodeURIComponent(data.domain)}&mailbox_count=${data.mailbox_count || 50}`,
+        { method: "POST" },
+      ),
+
+    // Mailboxes
+    listMailboxes: (tenantId: string) =>
+      request<import("./types").Mailbox[]>(`/api/v2/mailboxes/tenant/${tenantId}`),
+    retryMailbox: (mailboxId: string) =>
+      request<any>(`/api/v2/mailboxes/${mailboxId}/retry`, { method: "POST" }),
+
+    // Monitoring
+    dashboardStats: () =>
+      request<import("./types").DashboardStats>("/api/v2/monitoring/dashboard"),
+
+    // Audit
+    listAuditEvents: (params?: { tenant_id?: string; job_id?: string; limit?: number; offset?: number }) => {
+      const qs = new URLSearchParams();
+      if (params?.tenant_id) qs.set("tenant_id", params.tenant_id);
+      if (params?.job_id) qs.set("job_id", params.job_id);
+      if (params?.limit) qs.set("limit", String(params.limit));
+      if (params?.offset) qs.set("offset", String(params.offset));
+      return request<import("./types").AuditEvent[]>(`/api/v2/audit?${qs.toString()}`);
+    },
+  },
 };

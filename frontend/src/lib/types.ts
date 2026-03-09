@@ -127,3 +127,55 @@ export interface Alert {
   created_at: string;
   resolved_at: string | null;
 }
+
+// ── v2 Workflow Types ──────────────────────────────────────────
+
+export interface WorkflowStep {
+  id: string;
+  step_index: number;
+  step_name: string;
+  status: "pending" | "running" | "success" | "failed" | "warning" | "skipped";
+  attempts: number;
+  max_attempts: number;
+  last_error: string | null;
+  detail: string | null;
+  started_at: string | null;
+  completed_at: string | null;
+}
+
+export interface WorkflowJob {
+  id: string;
+  tenant_id: string;
+  job_type: "tenant_setup" | "mailbox_pipeline" | "health_check";
+  status: "pending" | "queued" | "running" | "complete" | "failed" | "cancelled";
+  config: Record<string, any> | null;
+  current_step_index: number | null;
+  total_steps: number | null;
+  celery_task_id: string | null;
+  error_message: string | null;
+  created_at: string;
+  updated_at: string;
+  started_at: string | null;
+  completed_at: string | null;
+  steps: WorkflowStep[];
+}
+
+export interface AuditEvent {
+  id: number;
+  tenant_id: string | null;
+  job_id: string | null;
+  event_type: string;
+  actor: string;
+  payload: Record<string, any> | null;
+  created_at: string;
+}
+
+export interface DashboardStats {
+  total_tenants: number;
+  complete_tenants: number;
+  total_mailboxes: number;
+  healthy_mailboxes: number;
+  active_jobs: number;
+  failed_jobs: number;
+  active_alerts: number;
+}
