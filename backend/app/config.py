@@ -1,6 +1,6 @@
 """Pydantic Settings — loaded from environment / .env file."""
 
-from pydantic import model_validator
+from pydantic import field_validator, model_validator
 from pydantic_settings import BaseSettings
 
 
@@ -23,6 +23,20 @@ class Settings(BaseSettings):
 
     # CORS
     cors_origins: list[str] = ["http://localhost:3000"]
+
+    @field_validator("cors_origins", mode="before")
+    @classmethod
+    def parse_cors_origins(cls, v: object) -> object:
+        if isinstance(v, str):
+            import json
+            try:
+                parsed = json.loads(v)
+                if isinstance(parsed, list):
+                    return parsed
+            except (json.JSONDecodeError, TypeError):
+                pass
+            return [s.strip() for s in v.split(",") if s.strip()]
+        return v
 
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
 
