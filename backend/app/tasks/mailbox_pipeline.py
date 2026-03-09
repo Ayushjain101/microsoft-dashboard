@@ -877,7 +877,7 @@ def retry_pending_dkim():
         return {"status": "done", "results": results}
 
 
-@celery_app.task(name="app.tasks.mailbox_pipeline.run_mailbox_health_check", bind=True, queue="tenant_setup",
+@celery_app.task(name="app.tasks.mailbox_pipeline.run_mailbox_health_check", bind=True, queue="health_check",
                  acks_late=True, reject_on_worker_lost=True)
 def run_mailbox_health_check(self, job_id: str):
     """Verify mailboxes from a completed job actually exist in Exchange and can authenticate via SMTP."""
