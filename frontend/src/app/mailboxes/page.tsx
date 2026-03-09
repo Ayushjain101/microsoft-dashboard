@@ -890,6 +890,7 @@ export default function MailboxesPage() {
                           currentStep={parseCurrentStep(j.current_phase)}
                           healthResult={healthResults[j.id] || null}
                           mailboxCount={j.mailbox_count}
+                          dkimEnabled={j.dkim_enabled}
                         />
                         {healthResults[j.id] && (
                           <HealthCheckBanner result={healthResults[j.id]} tenantId={j.tenant_id} />

@@ -37,9 +37,10 @@ interface Props {
   currentStep?: number | null;
   healthResult?: HealthResult | null;
   mailboxCount?: number;
+  dkimEnabled?: boolean;
 }
 
-export default function MailboxPipelineProgress({ stepResults, jobStatus, currentStep, healthResult, mailboxCount }: Props) {
+export default function MailboxPipelineProgress({ stepResults, jobStatus, currentStep, healthResult, mailboxCount, dkimEnabled }: Props) {
   // Health check shows all mailboxes present — override stale step results
   const healthAllGood = healthResult?.status === "complete"
     && healthResult.found_in_exchange != null
@@ -47,6 +48,8 @@ export default function MailboxPipelineProgress({ stepResults, jobStatus, curren
     && healthResult.found_in_exchange >= mailboxCount;
 
   function getStepStatus(stepNum: number): string {
+    // If DKIM is enabled in DB, override stale step 5 warning
+    if (dkimEnabled && stepNum === 5) return "success";
     // If health check confirms all mailboxes exist, override step 7 warnings
     if (healthAllGood && stepNum === 7) return "success";
     if (stepResults && stepResults[String(stepNum)]) {
