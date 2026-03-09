@@ -22,14 +22,33 @@ const STATUS_STYLES: Record<string, { bg: string; dot: string; text: string }> =
   pending: { bg: "bg-gray-50", dot: "bg-gray-300", text: "text-gray-400" },
 };
 
+interface HealthResult {
+  status: string;
+  found_in_exchange?: number;
+  total_in_db?: number;
+  missing?: string[];
+  smtp_ok?: number;
+  smtp_tested?: number;
+}
+
 interface Props {
   stepResults: Record<string, StepResult> | null;
   jobStatus: string;
   currentStep?: number | null;
+  healthResult?: HealthResult | null;
+  mailboxCount?: number;
 }
 
-export default function MailboxPipelineProgress({ stepResults, jobStatus, currentStep }: Props) {
+export default function MailboxPipelineProgress({ stepResults, jobStatus, currentStep, healthResult, mailboxCount }: Props) {
+  // Health check shows all mailboxes present — override stale step results
+  const healthAllGood = healthResult?.status === "complete"
+    && healthResult.found_in_exchange != null
+    && mailboxCount != null
+    && healthResult.found_in_exchange >= mailboxCount;
+
   function getStepStatus(stepNum: number): string {
+    // If health check confirms all mailboxes exist, override step 7 warnings
+    if (healthAllGood && stepNum === 7) return "success";
     if (stepResults && stepResults[String(stepNum)]) {
       return stepResults[String(stepNum)].status;
     }
@@ -49,6 +68,10 @@ export default function MailboxPipelineProgress({ stepResults, jobStatus, curren
   }
 
   function getDetail(stepNum: number): string | undefined {
+    // Override step 7 detail when health check confirms all good
+    if (healthAllGood && stepNum === 7) {
+      return `Exchange: ${healthResult!.found_in_exchange}/${mailboxCount} found, SMTP: ${healthResult!.smtp_ok ?? 0}/${healthResult!.smtp_tested ?? 0} passed`;
+    }
     return stepResults?.[String(stepNum)]?.detail;
   }
 

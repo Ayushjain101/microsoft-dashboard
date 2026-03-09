@@ -888,6 +888,8 @@ export default function MailboxesPage() {
                           stepResults={j.step_results}
                           jobStatus={j.status}
                           currentStep={parseCurrentStep(j.current_phase)}
+                          healthResult={healthResults[j.id] || null}
+                          mailboxCount={j.mailbox_count}
                         />
                         {healthResults[j.id] && (
                           <HealthCheckBanner result={healthResults[j.id]} tenantId={j.tenant_id} />
