@@ -1228,11 +1228,42 @@ def retry_missing_mailboxes(self, job_id: str):
                 f"}} }}"
             )
 
-        create_stdout, _ = ps.run_batched(create_cmds, batch_size=25, timeout=900)
+        # Run with retry for transient PowerShell errors (OperationStopped, etc.)
+        create_stdout = ""
+        for attempt in range(3):
+            try:
+                out, _ = ps.run_batched(create_cmds, batch_size=25, timeout=900)
+                create_stdout = create_stdout + "\n" + out if create_stdout else out
+                break
+            except RuntimeError as e:
+                if attempt < 2 and ("OperationStopped" in str(e) or "sending the request" in str(e)):
+                    logger.warning(f"Retry-missing batch attempt {attempt+1} failed with transient error, retrying in 15s...")
+                    time.sleep(15)
+                    continue
+                raise
+
+        # Retry any individual failures up to 2 times
+        succeeded_first, failed_first = _parse_ps_markers(create_stdout, ["CREATED:", "EXISTS:"])
+        ok_so_far = succeeded_first["CREATED:"] | succeeded_first["EXISTS:"]
+        remaining = failed_first
+        for retry_num in range(1, 3):
+            to_retry = [(e, r) for e, r in remaining if e.lower() not in ok_so_far]
+            if not to_retry:
+                break
+            logger.info(f"Retry-missing attempt {retry_num}: {len(to_retry)} failed, retrying after 15s...")
+            time.sleep(15)
+            retry_emails = {e.lower() for e, _ in to_retry}
+            retry_cmds = [cmd for cmd, mb in zip(create_cmds, missing_list) if mb["email"].lower() in retry_emails]
+            retry_out, _ = ps.run_batched(retry_cmds, batch_size=25, timeout=900)
+            create_stdout = create_stdout + "\n" + retry_out
+            retry_ok, remaining = _parse_ps_markers(retry_out, ["CREATED:", "EXISTS:"])
+            ok_so_far |= retry_ok["CREATED:"] | retry_ok["EXISTS:"]
+
         succeeded, failed_list = _parse_ps_markers(create_stdout, ["CREATED:", "EXISTS:"])
         created_emails = succeeded["CREATED:"]
         exists_emails = succeeded["EXISTS:"]
         ok_emails = created_emails | exists_emails
+        failed_list = [(e, r) for e, r in failed_list if e.lower() not in ok_emails]
 
         # Save newly created mailboxes to DB (ones that were missing from DB, e.g. original step 7 failures)
         if created_emails:
