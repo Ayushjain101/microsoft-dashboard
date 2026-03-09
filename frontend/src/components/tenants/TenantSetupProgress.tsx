@@ -37,7 +37,8 @@ export default function TenantSetupProgress({ stepResults, tenantStatus, current
     if (stepResults && stepResults[String(stepNum)]) {
       return stepResults[String(stepNum)].status;
     }
-    if (!stepResults && tenantStatus === "complete") return "success";
+    // Job completed — steps with no entry were successful
+    if (tenantStatus === "complete") return "success";
     if (tenantStatus === "running" && currentStep) {
       if (stepNum < currentStep) return "success";
       if (stepNum === currentStep) return "running";

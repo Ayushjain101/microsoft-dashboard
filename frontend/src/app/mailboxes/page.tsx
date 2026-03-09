@@ -377,7 +377,7 @@ export default function MailboxesPage() {
 function HealthCheckBanner({ result: r, tenantId, fixLoading, fixResults, onFix }: { result: MailboxHealthResult; tenantId: string; fixLoading: Set<string>; fixResults: Record<string, any>; onFix: (id: string) => void }) {
   if (r.status === "error") return <div className="mt-2 p-3 bg-red-50 border border-red-200 rounded-xl text-xs text-red-700"><span className="font-medium">Health check error:</span> {r.error}</div>;
   if (r.status !== "complete") return null;
-  const allGood = r.missing?.length === 0 && r.smtp_failed?.length === 0;
+  const allGood = r.missing?.length === 0 && r.smtp_failed?.length === 0 && (r.smtp_ok == null || r.smtp_ok === r.smtp_tested);
   return (
     <div className={`mt-2 p-3 ${allGood ? "bg-emerald-50 border-emerald-200" : "bg-amber-50 border-amber-200"} border rounded-xl text-xs`}>
       <div className="flex items-center gap-4 mb-1">

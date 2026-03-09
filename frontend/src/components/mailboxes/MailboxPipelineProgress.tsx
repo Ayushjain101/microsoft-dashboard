@@ -41,26 +41,34 @@ interface Props {
 }
 
 export default function MailboxPipelineProgress({ stepResults, jobStatus, currentStep, healthResult, mailboxCount, dkimEnabled }: Props) {
-  // Health check shows all mailboxes present — override stale step results
-  const healthAllGood = healthResult?.status === "complete"
+  const healthComplete = healthResult?.status === "complete";
+  const healthAllExchangeGood = healthComplete
     && healthResult.found_in_exchange != null
     && mailboxCount != null
     && healthResult.found_in_exchange >= mailboxCount;
+  const healthSmtpGood = healthComplete
+    && healthResult.smtp_ok != null
+    && healthResult.smtp_tested != null
+    && healthResult.smtp_ok >= healthResult.smtp_tested;
 
   function getStepStatus(stepNum: number): string {
     // If DKIM is enabled in DB, override stale step 5 warning
     if (dkimEnabled && stepNum === 5) return "success";
-    // If health check confirms all mailboxes exist, override step 7 warnings
-    if (healthAllGood && stepNum === 7) return "success";
+    // Health check overrides for steps 7-8
+    if (healthAllExchangeGood && stepNum === 7) return "success";
+    if (healthComplete && stepNum === 8) {
+      if (healthSmtpGood) return "success";
+      if (healthResult.smtp_ok != null && healthResult.smtp_tested != null && healthResult.smtp_ok > 0) return "warning";
+      if (healthResult.smtp_tested != null && healthResult.smtp_ok === 0) return "failed";
+    }
+
     if (stepResults && stepResults[String(stepNum)]) {
       return stepResults[String(stepNum)].status;
     }
+    // Job completed — steps with no entry were either successful or skipped
+    if (jobStatus === "complete") return "success";
     // Legacy jobs with null step_results: show all green if complete
-    if (!stepResults && jobStatus === "complete") return "success";
-    if (!stepResults && jobStatus === "failed") {
-      // Can't know which step failed, show all as unknown
-      return "success";
-    }
+    if (!stepResults && jobStatus === "failed") return "pending";
     // Running job — figure out if this step is current, done, or pending
     if (jobStatus === "running" && currentStep) {
       if (stepNum < currentStep) return "success";
@@ -72,8 +80,16 @@ export default function MailboxPipelineProgress({ stepResults, jobStatus, curren
 
   function getDetail(stepNum: number): string | undefined {
     // Override step 7 detail when health check confirms all good
-    if (healthAllGood && stepNum === 7) {
-      return `Exchange: ${healthResult!.found_in_exchange}/${mailboxCount} found, SMTP: ${healthResult!.smtp_ok ?? 0}/${healthResult!.smtp_tested ?? 0} passed`;
+    if (healthAllExchangeGood && stepNum === 7) {
+      return `Exchange: ${healthResult!.found_in_exchange}/${mailboxCount} found`;
+    }
+    // Override step 8 detail with health SMTP data
+    if (healthComplete && stepNum === 8 && healthResult.smtp_tested != null) {
+      const detail = `SMTP: ${healthResult.smtp_ok ?? 0}/${healthResult.smtp_tested} passed`;
+      if (!healthSmtpGood && healthResult.smtp_tested - (healthResult.smtp_ok ?? 0) > 0) {
+        return `${detail} (${healthResult.smtp_tested - (healthResult.smtp_ok ?? 0)} failed)`;
+      }
+      return detail;
     }
     return stepResults?.[String(stepNum)]?.detail;
   }

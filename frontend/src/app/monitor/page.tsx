@@ -68,12 +68,12 @@ export default function MonitorPage() {
                   <div className="text-2xl font-bold">{dashboard?.total_mailboxes || 0}</div>
                 </div>
                 <div className="bg-white rounded-xl border p-4">
-                  <div className="flex items-center gap-2 text-emerald-600 text-xs font-medium mb-2"><CheckCircle size={14} /> HEALTHY</div>
-                  <div className="text-2xl font-bold text-emerald-600">{checkCounts.healthy || 0}</div>
+                  <div className="flex items-center gap-2 text-emerald-600 text-xs font-medium mb-2"><CheckCircle size={14} /> PASSED</div>
+                  <div className="text-2xl font-bold text-emerald-600">{checkCounts.pass || 0}</div>
                 </div>
                 <div className="bg-white rounded-xl border p-4">
-                  <div className="flex items-center gap-2 text-red-600 text-xs font-medium mb-2"><XCircle size={14} /> BLOCKED/FAILED</div>
-                  <div className="text-2xl font-bold text-red-600">{(checkCounts.blocked || 0) + (checkCounts.auth_failed || 0) + (checkCounts.error || 0)}</div>
+                  <div className="flex items-center gap-2 text-red-600 text-xs font-medium mb-2"><XCircle size={14} /> FAILED</div>
+                  <div className="text-2xl font-bold text-red-600">{(checkCounts.fail || 0) + (checkCounts.unknown || 0)}</div>
                 </div>
                 <div className="bg-white rounded-xl border p-4">
                   <div className="flex items-center gap-2 text-amber-600 text-xs font-medium mb-2"><Bell size={14} /> ACTIVE ALERTS</div>
@@ -81,7 +81,7 @@ export default function MonitorPage() {
                 </div>
                 <div className="bg-white rounded-xl border p-4">
                   <div className="flex items-center gap-2 text-orange-600 text-xs font-medium mb-2"><Mail size={14} /> MAILFLOW ISSUES</div>
-                  <div className="text-2xl font-bold text-orange-600">{(mailflowCounts.critical || 0) + (mailflowCounts.warning || 0)}</div>
+                  <div className="text-2xl font-bold text-orange-600">{(mailflowCounts.fail || 0) + (mailflowCounts.warning || 0)}</div>
                 </div>
               </div>
 

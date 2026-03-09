@@ -28,8 +28,8 @@ export default function TenantMailboxesPage() {
     if (searchQuery && !m.email.toLowerCase().includes(searchQuery.toLowerCase()) && !m.display_name?.toLowerCase().includes(searchQuery.toLowerCase())) return false;
     if (statusFilter === "smtp_enabled" && !m.smtp_enabled) return false;
     if (statusFilter === "smtp_disabled" && m.smtp_enabled) return false;
-    if (statusFilter === "healthy" && m.last_monitor_status !== "healthy") return false;
-    if (statusFilter === "unhealthy" && m.last_monitor_status === "healthy") return false;
+    if (statusFilter === "healthy" && m.last_monitor_status !== "pass") return false;
+    if (statusFilter === "unhealthy" && (m.last_monitor_status === "pass" || !m.last_monitor_status)) return false;
     return true;
   });
 
@@ -99,10 +99,10 @@ export default function TenantMailboxesPage() {
                     <td className="px-4 py-3">
                       {m.last_monitor_status ? (
                         <span className={`px-2.5 py-1 rounded-lg text-xs font-medium ${
-                          m.last_monitor_status === "healthy" ? "bg-emerald-50 text-emerald-700 border border-emerald-200" :
-                          m.last_monitor_status === "blocked" ? "bg-red-50 text-red-700 border border-red-200" :
+                          m.last_monitor_status === "pass" ? "bg-emerald-50 text-emerald-700 border border-emerald-200" :
+                          m.last_monitor_status === "fail" ? "bg-red-50 text-red-700 border border-red-200" :
                           "bg-amber-50 text-amber-700 border border-amber-200"
-                        }`}>{m.last_monitor_status}</span>
+                        }`}>{m.last_monitor_status === "pass" ? "healthy" : m.last_monitor_status}</span>
                       ) : <span className="text-gray-400">---</span>}
                     </td>
                     <td className="px-4 py-3 text-xs text-gray-500">{new Date(m.created_at).toLocaleString()}</td>

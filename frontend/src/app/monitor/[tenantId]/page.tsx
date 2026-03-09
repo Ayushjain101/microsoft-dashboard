@@ -10,12 +10,10 @@ import { useRouter } from "next/navigation";
 import { useState } from "react";
 
 const STATUS_COLORS: Record<string, string> = {
-  healthy: "bg-emerald-50 text-emerald-700 border border-emerald-200",
-  blocked: "bg-red-50 text-red-700 border border-red-200",
-  auth_failed: "bg-red-50 text-red-700 border border-red-200",
-  timeout: "bg-amber-50 text-amber-700 border border-amber-200",
-  error: "bg-red-50 text-red-700 border border-red-200",
+  pass: "bg-emerald-50 text-emerald-700 border border-emerald-200",
+  fail: "bg-red-50 text-red-700 border border-red-200",
   warning: "bg-amber-50 text-amber-700 border border-amber-200",
+  unknown: "bg-gray-100 text-gray-600 border border-gray-200",
 };
 
 export default function TenantHealthPage() {

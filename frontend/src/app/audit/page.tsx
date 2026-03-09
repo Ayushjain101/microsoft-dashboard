@@ -88,7 +88,7 @@ export default function AuditLogPage() {
             </table>
 
             <div className="flex items-center justify-between px-4 py-3 border-t bg-gray-50/80">
-              <span className="text-sm text-gray-500">Showing {offset + 1}--{offset + filtered.length}</span>
+              <span className="text-sm text-gray-500">Showing {offset + 1} – {offset + filtered.length}</span>
               <div className="flex gap-2">
                 <button disabled={offset === 0} onClick={() => setOffset(Math.max(0, offset - PAGE_SIZE))} className="px-3 py-1.5 text-sm border rounded-lg hover:bg-white disabled:opacity-50 flex items-center gap-1"><ChevronLeft className="w-4 h-4" /> Prev</button>
                 <button disabled={events.length < PAGE_SIZE} onClick={() => setOffset(offset + PAGE_SIZE)} className="px-3 py-1.5 text-sm border rounded-lg hover:bg-white disabled:opacity-50 flex items-center gap-1">Next <ChevronRight className="w-4 h-4" /></button>

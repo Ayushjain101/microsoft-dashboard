@@ -4,7 +4,7 @@ const STEPS = [
   "Browser Login", "Security Setup", "Create App Registration",
   "Create Service Principal", "Create Client Secret", "Generate Certificate",
   "Add API Permissions", "Grant Admin Consent", "Assign Exchange Admin Role",
-  "Save Credentials", "Finalize", "Delete MFA Authenticator",
+  "Save Credentials", "Finalize", "Grant Instantly Consent", "Delete MFA",
 ];
 
 interface Props {
