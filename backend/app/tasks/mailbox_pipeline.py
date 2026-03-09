@@ -969,10 +969,11 @@ def run_mailbox_health_check(self, job_id: str, force: bool = False):
         extra_in_exchange = sorted(exchange_emails - db_emails)
         found = db_emails & exchange_emails
 
-        # SMTP auth test on a sample (up to 5) — run in parallel
+        # SMTP auth test on ALL mailboxes — run in parallel
+        # (login-only, no email sent — safe for any count)
         smtp_ok = 0
         smtp_failed = []
-        sample = sorted(found)[:5]
+        sample = sorted(found)
 
         def _smtp_test(email):
             pwd = db_passwords.get(email)
@@ -987,7 +988,7 @@ def run_mailbox_health_check(self, job_id: str, force: bool = False):
                 return {"email": email, "ok": False, "error": str(e)[:200]}
 
         from concurrent.futures import ThreadPoolExecutor, as_completed
-        with ThreadPoolExecutor(max_workers=5) as pool:
+        with ThreadPoolExecutor(max_workers=10) as pool:
             futures = {pool.submit(_smtp_test, email): email for email in sample}
             for fut in as_completed(futures):
                 res = fut.result()
