@@ -24,7 +24,7 @@ celery_app.conf.update(
             "soft_time_limit": 1800, "time_limit": 1860,   # 30/31 min
         },
         "app.tasks.mailbox_pipeline.run_mailbox_pipeline": {
-            "soft_time_limit": 2400, "time_limit": 2460,   # 40/41 min
+            "soft_time_limit": 3000, "time_limit": 3060,   # 50/51 min (larger batches)
         },
         "app.tasks.monitor.run_mailflow_check": {
             "soft_time_limit": 180, "time_limit": 210,     # 3/3.5 min

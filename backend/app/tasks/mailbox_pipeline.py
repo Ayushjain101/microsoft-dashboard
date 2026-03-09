@@ -517,7 +517,7 @@ def run_mailbox_pipeline(self, job_id: str):
                     f"}} }}"
                 )
 
-            stdout, _ = ps.run_batched(commands, batch_size=10, timeout=600)
+            stdout, _ = ps.run_batched(commands, batch_size=25, timeout=900)
 
             # If many failures are due to domain not accepted, retry once after waiting
             succeeded_first, failed_first = _parse_ps_markers(stdout, ["CREATED:", "EXISTS:"])
@@ -531,7 +531,7 @@ def run_mailbox_pipeline(self, job_id: str):
                 # Rebuild commands only for failed emails
                 failed_emails = {email.lower() for email, _ in domain_reject_failures}
                 retry_commands = [cmd for cmd, mb in zip(commands, identities) if mb["email"].lower() in failed_emails]
-                retry_stdout, _ = ps.run_batched(retry_commands, batch_size=10, timeout=600)
+                retry_stdout, _ = ps.run_batched(retry_commands, batch_size=25, timeout=900)
                 # Merge results
                 stdout = stdout + "\n" + retry_stdout
 
@@ -599,7 +599,7 @@ def run_mailbox_pipeline(self, job_id: str):
                     f"Write-Host 'FAILED: {mb['email']} - ' $_.Exception.Message "
                     f"}}"
                 )
-            smtp_stdout, _ = ps.run_batched(smtp_commands, batch_size=10, timeout=600)
+            smtp_stdout, _ = ps.run_batched(smtp_commands, batch_size=25, timeout=900)
 
             smtp_succeeded, smtp_failed = _parse_ps_markers(smtp_stdout, ["ENABLED:"])
             enabled_emails = smtp_succeeded["ENABLED:"]
@@ -612,7 +612,7 @@ def run_mailbox_pipeline(self, job_id: str):
                 if retry_smtp_cmds:
                     logger.info(f"Step 8: retrying {len(retry_smtp_cmds)} failed SMTP enables after 5s")
                     time.sleep(5)
-                    retry_stdout, _ = ps.run_batched(retry_smtp_cmds, batch_size=10, timeout=600)
+                    retry_stdout, _ = ps.run_batched(retry_smtp_cmds, batch_size=25, timeout=900)
                     retry_succ, retry_fail = _parse_ps_markers(retry_stdout, ["ENABLED:"])
                     enabled_emails = enabled_emails | retry_succ["ENABLED:"]
                     # Only keep failures that failed on both attempts
@@ -659,7 +659,7 @@ def run_mailbox_pipeline(self, job_id: str):
                     f"Write-Host 'FAILED: {mb['email']} - ' $_.Exception.Message "
                     f"}}"
                 )
-            cal_stdout, _ = ps.run_batched(cal_commands, batch_size=10, timeout=600)
+            cal_stdout, _ = ps.run_batched(cal_commands, batch_size=25, timeout=900)
 
             cal_succeeded, cal_failed = _parse_ps_markers(cal_stdout, ["CONFIGURED:"])
             configured_emails = cal_succeeded["CONFIGURED:"]
@@ -672,7 +672,7 @@ def run_mailbox_pipeline(self, job_id: str):
                 if retry_cal_cmds:
                     logger.info(f"Step 9: retrying {len(retry_cal_cmds)} failed calendar configs after 5s")
                     time.sleep(5)
-                    retry_stdout, _ = ps.run_batched(retry_cal_cmds, batch_size=10, timeout=600)
+                    retry_stdout, _ = ps.run_batched(retry_cal_cmds, batch_size=25, timeout=900)
                     retry_succ, retry_fail = _parse_ps_markers(retry_stdout, ["CONFIGURED:"])
                     configured_emails = configured_emails | retry_succ["CONFIGURED:"]
                     cal_failed = [(e, r) for e, r in retry_fail
@@ -879,7 +879,7 @@ def retry_pending_dkim():
 
 @celery_app.task(name="app.tasks.mailbox_pipeline.run_mailbox_health_check", bind=True, queue="health_check",
                  acks_late=True, reject_on_worker_lost=True)
-def run_mailbox_health_check(self, job_id: str):
+def run_mailbox_health_check(self, job_id: str, force: bool = False):
     """Verify mailboxes from a completed job actually exist in Exchange and can authenticate via SMTP."""
     pfx_path = None
     try:
@@ -888,6 +888,15 @@ def run_mailbox_health_check(self, job_id: str):
             if not job:
                 publish_event_sync("mailbox_health_check", {"job_id": job_id, "status": "error", "error": "Job not found"})
                 return {"status": "error", "reason": "job_not_found"}
+
+            # Skip if checked recently (within 1 hour) unless forced
+            if not force and job.last_health_check:
+                age = (datetime.now(timezone.utc) - job.last_health_check.replace(tzinfo=timezone.utc)).total_seconds()
+                if age < 3600:
+                    logger.info(f"Skipping health check for job {job_id}, checked {int(age)}s ago")
+                    cached = job.health_results or {"job_id": job_id, "status": "skipped"}
+                    publish_event_sync("mailbox_health_check", cached)
+                    return cached
 
             tenant_id = str(job.tenant_id)
             domain = job.domain
@@ -951,22 +960,34 @@ def run_mailbox_health_check(self, job_id: str):
         extra_in_exchange = sorted(exchange_emails - db_emails)
         found = db_emails & exchange_emails
 
-        # SMTP auth test on a sample (up to 5)
+        # SMTP auth test on a sample (up to 5) — run in parallel
         smtp_ok = 0
         smtp_failed = []
         sample = sorted(found)[:5]
-        for email in sample:
+
+        def _smtp_test(email):
             pwd = db_passwords.get(email)
             if not pwd:
-                continue
+                return None
             try:
                 with smtplib.SMTP("smtp.office365.com", 587, timeout=15) as server:
                     server.starttls()
                     server.login(email, pwd)
-                smtp_ok += 1
+                return {"email": email, "ok": True}
             except Exception as e:
-                err_str = str(e)[:200]
-                smtp_failed.append({"email": email, "error": err_str})
+                return {"email": email, "ok": False, "error": str(e)[:200]}
+
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+        with ThreadPoolExecutor(max_workers=5) as pool:
+            futures = {pool.submit(_smtp_test, email): email for email in sample}
+            for fut in as_completed(futures):
+                res = fut.result()
+                if res is None:
+                    continue
+                if res["ok"]:
+                    smtp_ok += 1
+                else:
+                    smtp_failed.append({"email": res["email"], "error": res["error"]})
 
         result = {
             "job_id": job_id,
@@ -1186,7 +1207,7 @@ def retry_missing_mailboxes(self, job_id: str):
                 f"}} }}"
             )
 
-        create_stdout, _ = ps.run_batched(create_cmds, batch_size=10, timeout=600)
+        create_stdout, _ = ps.run_batched(create_cmds, batch_size=25, timeout=900)
         succeeded, failed_list = _parse_ps_markers(create_stdout, ["CREATED:", "EXISTS:"])
         created_emails = succeeded["CREATED:"]
         exists_emails = succeeded["EXISTS:"]
@@ -1226,7 +1247,7 @@ def retry_missing_mailboxes(self, job_id: str):
                     f"Write-Host 'FAILED: {email} - ' $_.Exception.Message "
                     f"}}"
                 )
-            smtp_stdout, _ = ps.run_batched(smtp_cmds, batch_size=10, timeout=600)
+            smtp_stdout, _ = ps.run_batched(smtp_cmds, batch_size=25, timeout=900)
 
             # Update smtp_enabled in DB for successfully enabled mailboxes
             smtp_succeeded, _ = _parse_ps_markers(smtp_stdout, ["ENABLED:"])
@@ -1254,7 +1275,7 @@ def retry_missing_mailboxes(self, job_id: str):
                     f"Write-Host 'FAILED: {email} - ' $_.Exception.Message "
                     f"}}"
                 )
-            ps.run_batched(cal_cmds, batch_size=10, timeout=600)
+            ps.run_batched(cal_cmds, batch_size=25, timeout=900)
 
         # Build result
         detail = f"Retried {len(missing_emails)} missing mailboxes: Created {len(created_emails)}, Already existed {len(exists_emails)}, Failed {len(failed_list)}"

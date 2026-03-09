@@ -165,14 +165,21 @@ def run_tenant_check(tenant_id: str):
             .limit(5)
         ).scalars().all()
 
-        blocked_count = 0
-        for mb in mailboxes:
+        # Run SMTP checks in parallel
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+
+        def _check_one(mb):
             password = decrypt(mb.password) if mb.password else None
             if not password:
-                continue
-            result = smtp_check(str(tenant_id), str(mb.id), mb.email, password)
-            if result == "blocked":
-                blocked_count += 1
+                return None
+            return smtp_check(str(tenant_id), str(mb.id), mb.email, password)
+
+        blocked_count = 0
+        with ThreadPoolExecutor(max_workers=5) as pool:
+            futures = [pool.submit(_check_one, mb) for mb in mailboxes]
+            for fut in as_completed(futures):
+                if fut.result() == "blocked":
+                    blocked_count += 1
 
         if blocked_count > 0:
             _create_alert(str(tenant_id), "smtp_blocked", "critical",
@@ -425,6 +432,6 @@ def run_mailflow_checks():
         ]
 
     for i, tid in enumerate(tenant_ids):
-        run_mailflow_check.apply_async(args=[tid], countdown=i * 30)
+        run_mailflow_check.apply_async(args=[tid], countdown=i * 10)
 
     logger.info(f"Dispatched {len(tenant_ids)} mailflow checks")

@@ -453,7 +453,7 @@ async def health_check_mailboxes(job_id: uuid.UUID, db: AsyncSession = Depends(g
         raise HTTPException(status_code=409, detail="Job must be complete or failed to run health check")
 
     from app.tasks.mailbox_pipeline import run_mailbox_health_check
-    run_mailbox_health_check.delay(str(job.id))
+    run_mailbox_health_check.apply_async(args=[str(job.id)], kwargs={"force": True})
     return {"status": "queued"}
 
 
