@@ -1147,10 +1147,17 @@ def retry_missing_mailboxes(self, job_id: str):
                 with Session(sync_engine) as db:
                     job_ref = db.get(MailboxJob, job_id)
                     tenant_name = db.get(Tenant, job_ref.tenant_id).name if job_ref else "Tenant"
-                fresh = generate_mailbox_identities(shortfall, domain, tenant_name)
+                # Generate a larger pool to avoid collisions with existing mailboxes
+                # (the generator uses a fixed seed, so small counts will always collide)
+                existing = db_map.keys() | exchange_emails
+                pool_size = min(shortfall + len(existing) + 10, 500)
+                fresh = generate_mailbox_identities(pool_size, domain, tenant_name)
+                added = 0
                 for mb in fresh:
+                    if added >= shortfall:
+                        break
                     email_key = mb["email"].lower()
-                    if email_key not in db_map and email_key not in exchange_emails:
+                    if email_key not in existing and email_key not in db_map:
                         db_map[email_key] = {
                             "email": mb["email"],
                             "display_name": mb["display_name"],
@@ -1158,6 +1165,10 @@ def retry_missing_mailboxes(self, job_id: str):
                             "password": mb["password"],
                         }
                         missing_emails.add(email_key)
+                        added += 1
+                if added < shortfall:
+                    logger.warning(f"Retry job {job_id}: could only generate {added}/{shortfall} "
+                                   f"non-colliding identities from pool of {pool_size}")
 
         if not missing_emails:
             # Update job count to reflect actual Exchange state
