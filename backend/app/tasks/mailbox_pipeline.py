@@ -1096,7 +1096,7 @@ def retry_missing_mailboxes(self, job_id: str):
             if not db_map and not job.custom_names and job.mailbox_count > 0:
                 from app.services.name_generator import generate_mailbox_identities
                 tenant_name = db.get(Tenant, job.tenant_id).name if db.get(Tenant, job.tenant_id) else "Tenant"
-                fresh = generate_mailbox_identities(job.mailbox_count, domain, tenant_name)
+                fresh = generate_mailbox_identities(job.mailbox_count, domain, tenant_name, seed=int(time.time()))
                 for mb in fresh:
                     db_map[mb["email"].lower()] = {
                         "email": mb["email"],
@@ -1157,11 +1157,10 @@ def retry_missing_mailboxes(self, job_id: str):
                 with Session(sync_engine) as db:
                     job_ref = db.get(MailboxJob, job_id)
                     tenant_name = db.get(Tenant, job_ref.tenant_id).name if job_ref else "Tenant"
-                # Generate a larger pool to avoid collisions with existing mailboxes
-                # (the generator uses a fixed seed, so small counts will always collide)
+                # Generate a larger pool with a random seed to avoid collisions
                 existing = db_map.keys() | exchange_emails
                 pool_size = min(shortfall + len(existing) + 10, 500)
-                fresh = generate_mailbox_identities(pool_size, domain, tenant_name)
+                fresh = generate_mailbox_identities(pool_size, domain, tenant_name, seed=int(time.time()))
                 added = 0
                 for mb in fresh:
                     if added >= shortfall:

@@ -35,8 +35,8 @@ LAST_NAMES = [
 ]
 
 
-def generate_mailbox_identities(count: int, domain: str, tenant_short: str) -> list[dict]:
-    rng = random.Random(42)
+def generate_mailbox_identities(count: int, domain: str, tenant_short: str, seed: int = 42) -> list[dict]:
+    rng = random.Random(seed)
     pairs: set[tuple[str, str]] = set()
     while len(pairs) < count:
         first = rng.choice(FIRST_NAMES)
