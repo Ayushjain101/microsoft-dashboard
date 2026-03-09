@@ -979,14 +979,28 @@ def run_mailbox_health_check(self, job_id: str):
             "smtp_ok": smtp_ok,
             "smtp_failed": smtp_failed,
         }
+        # Persist health results to DB
+        with Session(sync_engine) as db:
+            job = db.get(MailboxJob, job_id)
+            if job:
+                job.health_results = result
+                job.last_health_check = datetime.now(timezone.utc)
+                flag_modified(job, "health_results")
+                db.commit()
         publish_event_sync("mailbox_health_check", result)
         return result
 
     except Exception as e:
         logger.error(f"Mailbox health check failed for job {job_id}: {e}")
-        publish_event_sync("mailbox_health_check", {
-            "job_id": job_id, "status": "error", "error": str(e)[:500],
-        })
+        error_result = {"job_id": job_id, "status": "error", "error": str(e)[:500]}
+        with Session(sync_engine) as db:
+            job = db.get(MailboxJob, job_id)
+            if job:
+                job.health_results = error_result
+                job.last_health_check = datetime.now(timezone.utc)
+                flag_modified(job, "health_results")
+                db.commit()
+        publish_event_sync("mailbox_health_check", error_result)
         return {"status": "error", "error": str(e)}
     finally:
         if pfx_path and os.path.exists(pfx_path):

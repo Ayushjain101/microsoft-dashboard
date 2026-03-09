@@ -53,6 +53,16 @@ export default function MailboxesPage() {
       const [t, j] = await Promise.all([api.listTenants(1, "complete"), api.listMailboxJobs()]);
       setTenants(t.tenants);
       setJobs(j.jobs);
+      // Initialize health results from persisted data
+      const cached: Record<string, MailboxHealthResult> = {};
+      for (const job of j.jobs) {
+        if (job.health_results) {
+          cached[job.id] = job.health_results as unknown as MailboxHealthResult;
+        }
+      }
+      if (Object.keys(cached).length > 0) {
+        setHealthResults(prev => ({ ...cached, ...prev }));
+      }
     } catch {}
   }, []);
 

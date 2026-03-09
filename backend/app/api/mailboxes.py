@@ -106,6 +106,8 @@ def _job_to_out(j: MailboxJob, dkim_enabled: bool = False) -> dict:
         "error_message": j.error_message,
         "step_results": j.step_results,
         "dkim_enabled": dkim_enabled,
+        "health_results": j.health_results,
+        "last_health_check": j.last_health_check.isoformat() if j.last_health_check else None,
         "created_at": j.created_at.isoformat() if j.created_at else None,
         "completed_at": j.completed_at.isoformat() if j.completed_at else None,
     }

@@ -104,6 +104,8 @@ class MailboxJob(Base):
     step_results: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     custom_names: Mapped[list | None] = mapped_column(JSON, nullable=True)
     celery_task_id: Mapped[str | None] = mapped_column(String(255))
+    health_results: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    last_health_check: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
