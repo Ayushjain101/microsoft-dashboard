@@ -1329,6 +1329,12 @@ def retry_missing_mailboxes(self, job_id: str):
                 )
             ps.run_batched(cal_cmds, batch_size=25, timeout=900)
 
+        # Deduplicate failed list (retries produce duplicate entries for same email)
+        unique_failed = {}
+        for email, reason in failed_list:
+            unique_failed[email.lower()] = (email, reason)
+        failed_list = list(unique_failed.values())
+
         # Build result
         detail = f"Retried {len(missing_emails)} missing mailboxes: Created {len(created_emails)}, Already existed {len(exists_emails)}, Failed {len(failed_list)}"
         if failed_list:
