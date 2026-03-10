@@ -1,95 +1,520 @@
-"""API v2 — Tenant workflow endpoints."""
+"""API v2 — Tenant CRUD + setup trigger + workflow endpoints."""
 
+import csv
+import io
+import json
 import uuid
+from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import select
+from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File, status
+from fastapi.responses import StreamingResponse
+from pydantic import BaseModel, EmailStr, field_validator
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import check_auth
 from app.database import get_db
-from app.models import Tenant
-from app.models.workflow import WorkflowJob
-from app.schemas.workflow import WorkflowJobOut
+from app.models import Domain, Mailbox, MailboxJob, Tenant
+from app.services.audit import log_audit
+from app.services.encryption import encrypt, decrypt
 
 router = APIRouter(prefix="/api/v2/tenants", tags=["tenants-v2"], dependencies=[Depends(check_auth)])
 
 
-@router.post("/{tenant_id}/setup", response_model=WorkflowJobOut)
-async def start_tenant_setup(tenant_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
-    """Start tenant setup via workflow engine."""
-    result = await db.execute(select(Tenant).where(Tenant.id == tenant_id))
-    tenant = result.scalar_one_or_none()
-    if not tenant:
-        raise HTTPException(status_code=404, detail="Tenant not found")
-    if tenant.status == "complete":
-        raise HTTPException(status_code=400, detail="Tenant already set up")
+# ── Schemas ──────────────────────────────────────────────────────────────
 
-    # Create workflow job
-    job = WorkflowJob(
-        tenant_id=tenant_id,
-        job_type="tenant_setup",
-        status="queued",
-        config={},
-        idempotency_key=f"tenant_setup:{tenant_id}",
-    )
-    db.add(job)
-    tenant.status = "queued"
-    await db.commit()
-    await db.refresh(job)
+class TenantCreate(BaseModel):
+    name: str
+    admin_email: EmailStr
+    admin_password: str
+    new_password: str | None = None
 
-    from app.tasks.workflow_tasks import run_workflow_job
-    task = run_workflow_job.delay(str(job.id))
-    job.celery_task_id = task.id
-    await db.commit()
+    @field_validator("name")
+    @classmethod
+    def name_not_empty(cls, v: str) -> str:
+        v = v.strip()
+        if not v:
+            raise ValueError("Name cannot be empty")
+        if len(v) > 200:
+            raise ValueError("Name too long (max 200 chars)")
+        return v
 
-    return job
+    @field_validator("admin_password")
+    @classmethod
+    def password_not_empty(cls, v: str) -> str:
+        if not v:
+            raise ValueError("Password cannot be empty")
+        return v
 
 
-@router.post("/{tenant_id}/mailboxes", response_model=WorkflowJobOut)
-async def start_mailbox_pipeline(
-    tenant_id: uuid.UUID,
-    domain: str,
-    mailbox_count: int = 50,
-    cf_email: str | None = None,
-    cf_api_key: str | None = None,
-    custom_names: list[str] | None = None,
+class TenantUpdate(BaseModel):
+    admin_password: str | None = None
+    new_password: str | None = None
+
+
+class MailboxPipelineRequest(BaseModel):
+    domain: str
+    mailbox_count: int = 50
+    cf_email: str | None = None
+    cf_api_key: str | None = None
+    custom_names: list[str] | None = None
+
+    @field_validator("domain")
+    @classmethod
+    def validate_domain(cls, v: str) -> str:
+        v = v.strip().lower()
+        if not v or "." not in v or len(v) > 253:
+            raise ValueError("Invalid domain format")
+        return v
+
+    @field_validator("mailbox_count")
+    @classmethod
+    def validate_mailbox_count(cls, v: int) -> int:
+        if v < 1 or v > 500:
+            raise ValueError("mailbox_count must be between 1 and 500")
+        return v
+
+    @field_validator("custom_names")
+    @classmethod
+    def validate_custom_names(cls, v: list[str] | None) -> list[str] | None:
+        if v is None:
+            return v
+        v = [n.strip() for n in v if n.strip()]
+        if not v:
+            return None
+        for name in v:
+            parts = name.split()
+            if len(parts) < 2:
+                raise ValueError(f"Each name must have first and last name: '{name}'")
+        return v
+
+
+# ── Helpers ──────────────────────────────────────────────────────────────
+
+def _tenant_to_out(t: Tenant) -> dict:
+    return {
+        "id": str(t.id),
+        "name": t.name,
+        "admin_email": t.admin_email,
+        "status": t.status,
+        "current_step": t.current_step,
+        "error_message": t.error_message,
+        "step_results": t.step_results,
+        "health_results": t.health_results,
+        "last_health_check": t.last_health_check.isoformat() if t.last_health_check else None,
+        "created_at": t.created_at.isoformat() if t.created_at else None,
+        "updated_at": t.updated_at.isoformat() if t.updated_at else None,
+        "completed_at": t.completed_at.isoformat() if t.completed_at else None,
+    }
+
+
+def _decrypt_safe(val: bytes | None) -> str | None:
+    if val is None:
+        return None
+    try:
+        return decrypt(val)
+    except Exception:
+        return None
+
+
+# ── Endpoints ────────────────────────────────────────────────────────────
+
+@router.get("")
+async def list_tenants(
+    status_filter: str | None = None,
+    page: int = Query(1, ge=1),
+    per_page: int = Query(50, ge=1, le=200),
     db: AsyncSession = Depends(get_db),
 ):
-    """Start mailbox creation pipeline via workflow engine."""
-    result = await db.execute(select(Tenant).where(Tenant.id == tenant_id))
-    tenant = result.scalar_one_or_none()
+    """List tenants with pagination, mailbox counts, and domains."""
+    valid_statuses = {"pending", "queued", "running", "complete", "failed"}
+    if status_filter and status_filter not in valid_statuses:
+        raise HTTPException(status_code=400, detail=f"Invalid status filter. Valid: {', '.join(valid_statuses)}")
+
+    # Subquery for mailbox count per tenant
+    mailbox_count_sq = (
+        select(Mailbox.tenant_id, func.count().label("mailbox_count"))
+        .group_by(Mailbox.tenant_id)
+        .subquery()
+    )
+
+    query = (
+        select(Tenant, mailbox_count_sq.c.mailbox_count)
+        .outerjoin(mailbox_count_sq, Tenant.id == mailbox_count_sq.c.tenant_id)
+        .order_by(Tenant.created_at.desc())
+    )
+    if status_filter:
+        query = query.where(Tenant.status == status_filter)
+
+    query = query.offset((page - 1) * per_page).limit(per_page)
+    result = await db.execute(query)
+    rows = result.all()
+
+    # Count total
+    count_q = select(func.count()).select_from(Tenant)
+    if status_filter:
+        count_q = count_q.where(Tenant.status == status_filter)
+    count_result = await db.execute(count_q)
+    total = count_result.scalar()
+
+    # Fetch domains for all tenants on this page
+    tenant_ids = [t.id for t, _ in rows]
+    domain_map: dict[uuid.UUID, list[dict]] = {}
+    if tenant_ids:
+        domain_q = select(Domain).where(Domain.tenant_id.in_(tenant_ids))
+        domain_result = await db.execute(domain_q)
+        for d in domain_result.scalars().all():
+            domain_map.setdefault(d.tenant_id, []).append({
+                "domain": d.domain,
+                "is_verified": d.is_verified,
+                "dkim_enabled": d.dkim_enabled,
+            })
+
+    tenants_out = []
+    for tenant, mb_count in rows:
+        out = _tenant_to_out(tenant)
+        out["mailbox_count"] = mb_count or 0
+        out["domains"] = domain_map.get(tenant.id, [])
+        tenants_out.append(out)
+
+    return {
+        "tenants": tenants_out,
+        "total": total,
+        "page": page,
+        "per_page": per_page,
+    }
+
+
+@router.post("", status_code=201)
+async def create_tenant(body: TenantCreate, db: AsyncSession = Depends(get_db)):
+    """Create a new tenant."""
+    # Check for duplicate
+    existing = await db.execute(select(Tenant).where(Tenant.admin_email == body.admin_email))
+    if existing.scalar_one_or_none():
+        raise HTTPException(status_code=409, detail="Tenant with this email already exists")
+
+    tenant = Tenant(
+        name=body.name,
+        admin_email=body.admin_email,
+        admin_password=encrypt(body.admin_password),
+        new_password=encrypt(body.new_password) if body.new_password else None,
+        status="pending",
+    )
+    db.add(tenant)
+    await db.flush()  # get the id before audit
+
+    await log_audit(db, "tenant.created", tenant_id=tenant.id, payload={"name": body.name, "email": body.admin_email})
+    await db.commit()
+    await db.refresh(tenant)
+    return _tenant_to_out(tenant)
+
+
+@router.post("/bulk", status_code=201)
+async def bulk_create_tenants(file: UploadFile = File(...), db: AsyncSession = Depends(get_db)):
+    """Accept CSV or JSON file with tenant data."""
+    content = await file.read()
+    text = content.decode("utf-8-sig")
+
+    tenants_data = []
+    if file.filename and file.filename.endswith(".json"):
+        tenants_data = json.loads(text)
+    else:
+        # CSV: expect columns email, password, [new_password], [name]
+        reader = csv.DictReader(io.StringIO(text))
+        for row in reader:
+            email = row.get("email", "").strip()
+            password = row.get("password", "").strip()
+            if email and password:
+                tenants_data.append({
+                    "admin_email": email,
+                    "admin_password": password,
+                    "new_password": row.get("new_password", "").strip() or None,
+                    "name": row.get("name", "").strip() or email.split("@")[1].split(".")[0],
+                })
+
+    created = []
+    skipped = []
+    for td in tenants_data:
+        existing = await db.execute(select(Tenant).where(Tenant.admin_email == td["admin_email"]))
+        if existing.scalar_one_or_none():
+            skipped.append(td["admin_email"])
+            continue
+
+        tenant = Tenant(
+            name=td.get("name", td["admin_email"].split("@")[1].split(".")[0]),
+            admin_email=td["admin_email"],
+            admin_password=encrypt(td["admin_password"]),
+            new_password=encrypt(td["new_password"]) if td.get("new_password") else None,
+            status="pending",
+        )
+        db.add(tenant)
+        created.append(td["admin_email"])
+
+    if created:
+        await log_audit(db, "tenant.bulk_created", payload={"count": len(created), "emails": created})
+    await db.commit()
+    return {"created": len(created), "skipped": len(skipped), "skipped_emails": skipped}
+
+
+@router.get("/export")
+async def export_tenants_csv(
+    ids: str | None = Query(None, description="Comma-separated tenant IDs"),
+    status_filter: str | None = None,
+    db: AsyncSession = Depends(get_db),
+):
+    """Export tenants as CSV."""
+    mailbox_count_sq = (
+        select(Mailbox.tenant_id, func.count().label("mailbox_count"))
+        .group_by(Mailbox.tenant_id)
+        .subquery()
+    )
+    query = (
+        select(Tenant, mailbox_count_sq.c.mailbox_count)
+        .outerjoin(mailbox_count_sq, Tenant.id == mailbox_count_sq.c.tenant_id)
+        .order_by(Tenant.created_at.desc())
+    )
+    if ids:
+        id_list = [uuid.UUID(i.strip()) for i in ids.split(",") if i.strip()]
+        query = query.where(Tenant.id.in_(id_list))
+    elif status_filter:
+        query = query.where(Tenant.status == status_filter)
+
+    result = await db.execute(query)
+    rows = result.all()
+
+    # Fetch domains
+    tenant_ids = [t.id for t, _ in rows]
+    domain_map: dict[uuid.UUID, list[str]] = {}
+    if tenant_ids:
+        domain_q = select(Domain).where(Domain.tenant_id.in_(tenant_ids))
+        domain_result = await db.execute(domain_q)
+        for d in domain_result.scalars().all():
+            domain_map.setdefault(d.tenant_id, []).append(d.domain)
+
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow(["name", "admin_email", "status", "mailbox_count", "domains", "created_at", "completed_at"])
+    for tenant, mb_count in rows:
+        writer.writerow([
+            tenant.name,
+            tenant.admin_email,
+            tenant.status,
+            mb_count or 0,
+            "; ".join(domain_map.get(tenant.id, [])),
+            tenant.created_at.isoformat() if tenant.created_at else "",
+            tenant.completed_at.isoformat() if tenant.completed_at else "",
+        ])
+
+    output.seek(0)
+    return StreamingResponse(
+        iter([output.getvalue()]),
+        media_type="text/csv",
+        headers={"Content-Disposition": "attachment; filename=tenants_export.csv"},
+    )
+
+
+@router.get("/{tenant_id}")
+async def get_tenant(tenant_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
+    """Get tenant detail with decrypted credentials."""
+    tenant = await db.get(Tenant, tenant_id)
+    if not tenant:
+        raise HTTPException(status_code=404, detail="Tenant not found")
+
+    out = _tenant_to_out(tenant)
+    out["tenant_id_ms"] = _decrypt_safe(tenant.tenant_id_ms)
+    out["client_id"] = _decrypt_safe(tenant.client_id)
+    out["client_secret"] = _decrypt_safe(tenant.client_secret)
+    out["cert_password"] = _decrypt_safe(tenant.cert_password)
+    out["mfa_secret"] = _decrypt_safe(tenant.mfa_secret)
+    return out
+
+
+@router.get("/{tenant_id}/credentials")
+async def download_credentials(tenant_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
+    """Download credentials JSON for a tenant."""
+    tenant = await db.get(Tenant, tenant_id)
+    if not tenant:
+        raise HTTPException(status_code=404, detail="Tenant not found")
+
+    return {
+        "admin_email": tenant.admin_email,
+        "tenant_id": _decrypt_safe(tenant.tenant_id_ms),
+        "client_id": _decrypt_safe(tenant.client_id),
+        "client_secret": _decrypt_safe(tenant.client_secret),
+        "cert_password": _decrypt_safe(tenant.cert_password),
+        "mfa_secret": _decrypt_safe(tenant.mfa_secret),
+    }
+
+
+@router.patch("/{tenant_id}")
+async def update_tenant(tenant_id: uuid.UUID, body: TenantUpdate, db: AsyncSession = Depends(get_db)):
+    """Update tenant password(s)."""
+    tenant = await db.get(Tenant, tenant_id)
+    if not tenant:
+        raise HTTPException(status_code=404, detail="Tenant not found")
+    if tenant.status in ("running", "queued"):
+        raise HTTPException(status_code=409, detail="Cannot edit tenant while setup is running")
+
+    changes = {}
+    if body.admin_password is not None:
+        tenant.admin_password = encrypt(body.admin_password)
+        changes["admin_password"] = "updated"
+    if body.new_password is not None:
+        tenant.new_password = encrypt(body.new_password) if body.new_password else None
+        changes["new_password"] = "updated" if body.new_password else "cleared"
+
+    tenant.updated_at = datetime.now(timezone.utc)
+    await log_audit(db, "tenant.updated", tenant_id=tenant.id, payload=changes)
+    await db.commit()
+    await db.refresh(tenant)
+    return _tenant_to_out(tenant)
+
+
+@router.delete("/{tenant_id}")
+async def delete_tenant(tenant_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
+    """Delete a tenant and all related data."""
+    tenant = await db.get(Tenant, tenant_id)
+    if not tenant:
+        raise HTTPException(status_code=404, detail="Tenant not found")
+
+    tenant_name = tenant.name
+    tenant_email = tenant.admin_email
+    await db.delete(tenant)
+    await log_audit(db, "tenant.deleted", tenant_id=tenant_id, payload={"name": tenant_name, "email": tenant_email})
+    await db.commit()
+    return {"status": "deleted"}
+
+
+@router.post("/{tenant_id}/setup")
+async def queue_setup(tenant_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
+    """Start tenant setup — dispatches Celery task."""
+    tenant = await db.get(Tenant, tenant_id)
+    if not tenant:
+        raise HTTPException(status_code=404, detail="Tenant not found")
+    if tenant.status in ("running", "queued"):
+        raise HTTPException(status_code=409, detail=f"Tenant is already {tenant.status}")
+
+    from app.tasks.tenant_setup import run_tenant_setup
+    tenant.status = "queued"
+    tenant.error_message = None
+    tenant.current_step = "Queued for setup"
+    await log_audit(db, "tenant.setup_started", tenant_id=tenant.id)
+    await db.commit()
+
+    run_tenant_setup.delay(str(tenant.id))
+    return {"status": "queued", "tenant_id": str(tenant.id)}
+
+
+@router.post("/{tenant_id}/retry")
+async def retry_setup(tenant_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
+    """Retry tenant setup."""
+    tenant = await db.get(Tenant, tenant_id)
+    if not tenant:
+        raise HTTPException(status_code=404, detail="Tenant not found")
+    if tenant.status not in ("failed", "complete", "pending"):
+        raise HTTPException(status_code=409, detail=f"Cannot retry tenant in status: {tenant.status}")
+
+    from app.tasks.tenant_setup import run_tenant_setup
+    tenant.status = "queued"
+    tenant.error_message = None
+    tenant.current_step = "Queued for retry"
+    await log_audit(db, "tenant.setup_retried", tenant_id=tenant.id)
+    await db.commit()
+
+    run_tenant_setup.delay(str(tenant.id))
+    return {"status": "queued", "tenant_id": str(tenant.id)}
+
+
+@router.post("/{tenant_id}/health-check")
+async def health_check(tenant_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
+    """Run health check on a completed tenant."""
+    tenant = await db.get(Tenant, tenant_id)
     if not tenant:
         raise HTTPException(status_code=404, detail="Tenant not found")
     if tenant.status != "complete":
-        raise HTTPException(status_code=400, detail="Tenant must be fully set up first")
+        raise HTTPException(status_code=409, detail="Health check only available for completed tenants")
 
-    config = {
-        "domain": domain.strip().lower(),
-        "mailbox_count": mailbox_count,
-    }
-    if cf_email:
-        config["cf_email"] = cf_email
-    if cf_api_key:
-        from app.services.encryption import encrypt
-        config["cf_api_key"] = cf_api_key  # Will be encrypted in task
-    if custom_names:
-        config["custom_names"] = custom_names
+    from app.tasks.tenant_health import run_tenant_health_check
+    run_tenant_health_check.delay(str(tenant.id))
+    return {"status": "queued", "tenant_id": str(tenant.id)}
 
-    job = WorkflowJob(
+
+@router.post("/{tenant_id}/fix-health")
+async def fix_health(tenant_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
+    """Fix health issues for a completed tenant."""
+    tenant = await db.get(Tenant, tenant_id)
+    if not tenant:
+        raise HTTPException(status_code=404, detail="Tenant not found")
+    if tenant.status != "complete":
+        raise HTTPException(status_code=409, detail="Tenant setup must be complete")
+
+    from app.tasks.tenant_health import fix_tenant_health
+    await log_audit(db, "tenant.fix_health", tenant_id=tenant.id)
+    await db.commit()
+    fix_tenant_health.delay(str(tenant.id))
+    return {"status": "queued", "tenant_id": str(tenant.id)}
+
+
+@router.post("/{tenant_id}/fix-security-defaults")
+async def fix_security_defaults(tenant_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
+    """Fix SMTP auth / security defaults for a completed tenant."""
+    tenant = await db.get(Tenant, tenant_id)
+    if not tenant:
+        raise HTTPException(status_code=404, detail="Tenant not found")
+    if tenant.status != "complete":
+        raise HTTPException(status_code=409, detail="Tenant setup must be complete")
+
+    from app.tasks.mailbox_pipeline import fix_security_defaults as fix_task
+    await log_audit(db, "tenant.fix_security_defaults", tenant_id=tenant.id)
+    await db.commit()
+    fix_task.delay(str(tenant.id))
+    return {"status": "queued", "tenant_id": str(tenant.id)}
+
+
+@router.post("/{tenant_id}/mailboxes", status_code=201)
+async def start_mailbox_pipeline(
+    tenant_id: uuid.UUID,
+    body: MailboxPipelineRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    """Start mailbox creation pipeline — accepts JSON body."""
+    tenant = await db.get(Tenant, tenant_id)
+    if not tenant:
+        raise HTTPException(status_code=404, detail="Tenant not found")
+    if tenant.status != "complete":
+        raise HTTPException(status_code=409, detail="Tenant setup must be complete first")
+
+    job = MailboxJob(
         tenant_id=tenant_id,
-        job_type="mailbox_pipeline",
+        domain=body.domain,
+        mailbox_count=body.mailbox_count,
+        cf_email=body.cf_email,
+        cf_api_key=encrypt(body.cf_api_key) if body.cf_api_key else None,
+        custom_names=body.custom_names,
         status="queued",
-        config=config,
-        idempotency_key=f"mailbox:{tenant_id}:{domain}:{uuid.uuid4().hex[:8]}",
+        current_phase="Queued",
     )
     db.add(job)
+    await db.flush()
+
+    await log_audit(
+        db, "mailbox.pipeline_started", tenant_id=tenant.id, job_id=job.id,
+        payload={"domain": body.domain, "mailbox_count": body.mailbox_count},
+    )
     await db.commit()
     await db.refresh(job)
 
-    from app.tasks.workflow_tasks import run_workflow_job
-    task = run_workflow_job.delay(str(job.id))
+    from app.tasks.mailbox_pipeline import run_mailbox_pipeline
+    task = run_mailbox_pipeline.delay(str(job.id))
     job.celery_task_id = task.id
     await db.commit()
 
-    return job
+    return {
+        "id": str(job.id),
+        "tenant_id": str(job.tenant_id),
+        "domain": job.domain,
+        "mailbox_count": job.mailbox_count,
+        "status": job.status,
+        "current_phase": job.current_phase,
+        "created_at": job.created_at.isoformat() if job.created_at else None,
+    }

@@ -4,11 +4,13 @@ import { useQuery, useQueryClient, useMutation } from "@tanstack/react-query";
 import { useState } from "react";
 import { api } from "@/lib/api";
 import { useAuth } from "@/hooks/useAuth";
+import { useToast } from "@/components/ui/Toast";
 import Sidebar from "@/components/layout/Sidebar";
 import { Plus, Trash2, Shield, Loader2, Settings as SettingsIcon } from "lucide-react";
 
 export default function SettingsPage() {
   const authenticated = useAuth();
+  const toast = useToast();
   const queryClient = useQueryClient();
   const [label, setLabel] = useState("");
   const [cfEmail, setCfEmail] = useState("");
@@ -28,13 +30,13 @@ export default function SettingsPage() {
       setLabel(""); setCfEmail(""); setCfApiKey(""); setIsDefault(false);
       queryClient.invalidateQueries({ queryKey: ["cf-configs"] });
     },
-    onError: (e: any) => alert(e.message),
+    onError: (e: any) => toast.error(e.message),
   });
 
   const deleteMutation = useMutation({
     mutationFn: (id: string) => api.deleteCFConfig(id),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ["cf-configs"] }),
-    onError: (e: any) => alert(e.message),
+    onError: (e: any) => toast.error(e.message),
   });
 
   function handleCreate(e: React.FormEvent) {

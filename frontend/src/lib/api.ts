@@ -20,54 +20,92 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
 }
 
 export const api = {
-  // Auth
-  login: (password: string) => request("/api/v1/auth/login", { method: "POST", body: JSON.stringify({ password }) }),
-  logout: () => request("/api/v1/auth/logout", { method: "POST" }),
-  verify: () => request<{ status: string }>("/api/v1/auth/verify"),
+  // ── Auth (stays v1) ──────────────────────────────────────────
+  login: (password: string) =>
+    request("/api/v1/auth/login", { method: "POST", body: JSON.stringify({ password }) }),
+  logout: () =>
+    request("/api/v1/auth/logout", { method: "POST" }),
+  verify: () =>
+    request<{ status: string }>("/api/v1/auth/verify"),
 
-  // Tenants
+  // ── Tenants (v2) ────────────────────────────────────────────
   listTenants: (page = 1, status?: string) =>
-    request<{ tenants: any[]; total: number }>(`/api/v1/tenants?page=${page}${status ? `&status_filter=${status}` : ""}`),
+    request<{ tenants: any[]; total: number }>(
+      `/api/v2/tenants?page=${page}${status ? `&status_filter=${status}` : ""}`
+    ),
   createTenant: (data: { name: string; admin_email: string; admin_password: string; new_password?: string }) =>
-    request("/api/v1/tenants", { method: "POST", body: JSON.stringify(data) }),
+    request("/api/v2/tenants", { method: "POST", body: JSON.stringify(data) }),
   bulkCreateTenants: async (file: File) => {
     const formData = new FormData();
     formData.append("file", file);
-    const r = await fetch(`/api/v1/tenants/bulk`, { method: "POST", body: formData, credentials: "include" });
+    const r = await fetch(`${API_URL}/api/v2/tenants/bulk`, {
+      method: "POST",
+      body: formData,
+      credentials: "include",
+    });
     if (!r.ok) {
       const err = await r.json().catch(() => ({ detail: r.statusText }));
       throw new Error(err.detail || r.statusText);
     }
     return r.json();
   },
-  getTenant: (id: string) => request<any>(`/api/v1/tenants/${id}`),
+  getTenant: (id: string) =>
+    request<any>(`/api/v2/tenants/${id}`),
+  getCredentials: (id: string) =>
+    request<any>(`/api/v2/tenants/${id}/credentials`),
   updateTenant: (id: string, data: { admin_password?: string; new_password?: string }) =>
-    request(`/api/v1/tenants/${id}`, { method: "PATCH", body: JSON.stringify(data) }),
-  deleteTenant: (id: string) => request(`/api/v1/tenants/${id}`, { method: "DELETE" }),
-  setupTenant: (id: string) => request(`/api/v1/tenants/${id}/setup`, { method: "POST" }),
-  retryTenant: (id: string) => request(`/api/v1/tenants/${id}/retry`, { method: "POST" }),
-  healthCheckTenant: (id: string) => request<{ status: string }>(`/api/v1/tenants/${id}/health-check`, { method: "POST" }),
-  fixHealth: (id: string) => request<{ status: string }>(`/api/v1/tenants/${id}/fix-health`, { method: "POST" }),
-  fixSecurityDefaults: (id: string) => request<{ status: string }>(`/api/v1/tenants/${id}/fix-security-defaults`, { method: "POST" }),
-  getCredentials: (id: string) => request<any>(`/api/v1/tenants/${id}/credentials`),
+    request(`/api/v2/tenants/${id}`, { method: "PATCH", body: JSON.stringify(data) }),
+  deleteTenant: (id: string) =>
+    request(`/api/v2/tenants/${id}`, { method: "DELETE" }),
+  setupTenant: (id: string) =>
+    request(`/api/v2/tenants/${id}/setup`, { method: "POST" }),
+  retryTenant: (id: string) =>
+    request(`/api/v2/tenants/${id}/retry`, { method: "POST" }),
+  healthCheckTenant: (id: string) =>
+    request<{ status: string }>(`/api/v2/tenants/${id}/health-check`, { method: "POST" }),
+  fixHealth: (id: string) =>
+    request<{ status: string }>(`/api/v2/tenants/${id}/fix-health`, { method: "POST" }),
+  fixSecurityDefaults: (id: string) =>
+    request<{ status: string }>(`/api/v2/tenants/${id}/fix-security-defaults`, { method: "POST" }),
+  startMailboxPipeline: (tenantId: string, data: {
+    domain: string;
+    mailbox_count?: number;
+    cf_email?: string;
+    cf_api_key?: string;
+    custom_names?: string[];
+  }) =>
+    request<import("./types").WorkflowJob>(
+      `/api/v2/tenants/${tenantId}/mailboxes`,
+      { method: "POST", body: JSON.stringify(data) },
+    ),
 
   exportTenantsCsv: (ids?: string[]) => {
     const params = ids?.length ? `?ids=${ids.join(",")}` : "";
-    window.open(`/api/v1/tenants/export${params}`, "_blank");
+    window.open(`${API_URL}/api/v2/tenants/export${params}`, "_blank");
+  },
+
+  // ── Mailboxes (v2) ──────────────────────────────────────────
+  listMailboxes: (tenantId: string) =>
+    request<import("./types").Mailbox[]>(`/api/v2/mailboxes/tenant/${tenantId}`),
+  exportMailboxesCsv: (tenantId: string) => {
+    window.open(`${API_URL}/api/v2/mailboxes/tenant/${tenantId}/export`, "_blank");
   },
   exportAllMailboxesCsv: (tenantIds?: string[]) => {
     const params = tenantIds?.length ? `?tenant_ids=${tenantIds.join(",")}` : "";
-    window.open(`/api/v1/mailboxes/export-all${params}`, "_blank");
+    window.open(`${API_URL}/api/v2/mailboxes/export-all${params}`, "_blank");
   },
-
-  // Mailboxes
-  listMailboxes: (tenantId: string) => request<{ mailboxes: any[] }>(`/api/v1/mailboxes/${tenantId}`),
-  createMailboxes: (tenantId: string, data: { domain: string; mailbox_count: number; cf_email?: string; cf_api_key?: string }) =>
-    request(`/api/v1/mailboxes/${tenantId}/create`, { method: "POST", body: JSON.stringify(data) }),
-  bulkCreateMailboxes: (items: { tenant_id: string; domain: string; mailbox_count: number; custom_names?: string[] }[], cfEmail?: string, cfApiKey?: string) =>
-    request<import("./types").BulkMailboxResult>("/api/v1/mailboxes/bulk-create", {
+  bulkCreateMailboxes: (
+    items: { tenant_id: string; domain: string; mailbox_count: number; custom_names?: string[] }[],
+    cfEmail?: string,
+    cfApiKey?: string,
+  ) =>
+    request<import("./types").BulkMailboxResult>("/api/v2/mailboxes/bulk-create", {
       method: "POST",
-      body: JSON.stringify({ items, cf_email: cfEmail || undefined, cf_api_key: cfApiKey || undefined }),
+      body: JSON.stringify({
+        items,
+        cf_email: cfEmail || undefined,
+        cf_api_key: cfApiKey || undefined,
+      }),
     }),
   bulkCreateMailboxesCsv: async (file: File, cfEmail?: string, cfApiKey?: string) => {
     const formData = new FormData();
@@ -76,92 +114,86 @@ export const api = {
     if (cfEmail) params.set("cf_email", cfEmail);
     if (cfApiKey) params.set("cf_api_key", cfApiKey);
     const qs = params.toString() ? `?${params.toString()}` : "";
-    const r = await fetch(`/api/v1/mailboxes/bulk-create-csv${qs}`, { method: "POST", body: formData, credentials: "include" });
+    const r = await fetch(`${API_URL}/api/v2/mailboxes/bulk-create-csv${qs}`, {
+      method: "POST",
+      body: formData,
+      credentials: "include",
+    });
     if (!r.ok) {
       const err = await r.json().catch(() => ({ detail: r.statusText }));
       throw new Error(err.detail || r.statusText);
     }
     return r.json() as Promise<import("./types").BulkMailboxResult>;
   },
-  listMailboxJobs: () => request<{ jobs: any[] }>("/api/v1/mailbox-jobs"),
-  stopJob: (jobId: string) => request(`/api/v1/mailbox-jobs/${jobId}/stop`, { method: "POST" }),
-  enableDkim: (jobId: string) => request<{ status: string }>(`/api/v1/mailbox-jobs/${jobId}/enable-dkim`, { method: "POST" }),
-  healthCheckMailboxes: (jobId: string) => request<{ status: string }>(`/api/v1/mailbox-jobs/${jobId}/health-check`, { method: "POST" }),
-  retryMissingMailboxes: (jobId: string) => request<{ status: string }>(`/api/v1/mailbox-jobs/${jobId}/retry-missing`, { method: "POST" }),
+  listMailboxJobs: () =>
+    request<{ jobs: any[] }>("/api/v2/mailboxes/jobs"),
+  stopJob: (jobId: string) =>
+    request(`/api/v2/mailboxes/jobs/${jobId}/stop`, { method: "POST" }),
+  healthCheckMailboxes: (jobId: string) =>
+    request<{ status: string }>(`/api/v2/mailboxes/jobs/${jobId}/health-check`, { method: "POST" }),
+  retryMissingMailboxes: (jobId: string) =>
+    request<{ status: string }>(`/api/v2/mailboxes/jobs/${jobId}/retry-missing`, { method: "POST" }),
+  enableDkim: (jobId: string) =>
+    request<{ status: string }>(`/api/v2/mailboxes/jobs/${jobId}/enable-dkim`, { method: "POST" }),
 
-  // Monitor
-  dashboard: () => request<any>("/api/v1/monitor/dashboard"),
-  tenantHealth: (tenantId: string) => request<any>(`/api/v1/monitor/${tenantId}`),
-  triggerCheck: (tenantId: string) => request(`/api/v1/monitor/${tenantId}/check-now`, { method: "POST" }),
-  mailflowHistory: (tenantId: string) => request<any>(`/api/v1/monitor/${tenantId}/mailflow`),
-  listAlerts: () => request<{ alerts: any[] }>("/api/v1/monitor/alerts"),
-  ackAlert: (id: number) => request(`/api/v1/monitor/alerts/${id}/ack`, { method: "POST" }),
+  // ── Monitoring (v2) ─────────────────────────────────────────
+  dashboard: () =>
+    request<any>("/api/v2/monitoring/dashboard"),
+  listAlerts: () =>
+    request<{ alerts: any[] }>("/api/v2/monitoring/alerts"),
+  ackAlert: (id: number) =>
+    request(`/api/v2/monitoring/alerts/${id}/ack`, { method: "POST" }),
+  tenantHealth: (tenantId: string) =>
+    request<any>(`/api/v2/monitoring/${tenantId}`),
+  mailflowHistory: (tenantId: string) =>
+    request<any>(`/api/v2/monitoring/${tenantId}/mailflow`),
+  triggerCheck: (tenantId: string) =>
+    request(`/api/v2/monitoring/${tenantId}/check-now`, { method: "POST" }),
 
-  // TOTP Vault
-  listTOTP: () => request<import("./types").TOTPEntry[]>("/api/v1/totp"),
-  getTOTP: (tenantId: string) => request<import("./types").TOTPEntry>(`/api/v1/totp/${tenantId}`),
+  // ── TOTP (v2) ───────────────────────────────────────────────
+  listTOTP: () =>
+    request<import("./types").TOTPEntry[]>("/api/v2/totp"),
+  getTOTP: (tenantId: string) =>
+    request<import("./types").TOTPEntry>(`/api/v2/totp/${tenantId}`),
   setTOTPSecret: (tenantId: string, secret: string) =>
-    request(`/api/v1/totp/${tenantId}/secret`, { method: "PUT", body: JSON.stringify({ secret }) }),
+    request(`/api/v2/totp/${tenantId}/secret`, { method: "PUT", body: JSON.stringify({ secret }) }),
   deleteTOTPSecret: (tenantId: string) =>
-    request(`/api/v1/totp/${tenantId}/secret`, { method: "DELETE" }),
+    request(`/api/v2/totp/${tenantId}/secret`, { method: "DELETE" }),
 
-  // Settings
-  listCFConfigs: () => request<{ configs: any[] }>("/api/v1/settings/cloudflare"),
-  createCFConfig: (data: any) => request("/api/v1/settings/cloudflare", { method: "POST", body: JSON.stringify(data) }),
-  deleteCFConfig: (id: string) => request(`/api/v1/settings/cloudflare/${id}`, { method: "DELETE" }),
-  getAlertSettings: () => request<any>("/api/v1/settings/alerts"),
-  updateAlertSettings: (data: any) => request("/api/v1/settings/alerts", { method: "PUT", body: JSON.stringify(data) }),
+  // ── Settings (v2) ──────────────────────────────────────────
+  listCFConfigs: () =>
+    request<{ configs: any[] }>("/api/v2/settings/cloudflare"),
+  createCFConfig: (data: any) =>
+    request("/api/v2/settings/cloudflare", { method: "POST", body: JSON.stringify(data) }),
+  deleteCFConfig: (id: string) =>
+    request(`/api/v2/settings/cloudflare/${id}`, { method: "DELETE" }),
+  getAlertSettings: () =>
+    request<any>("/api/v2/settings/alerts"),
+  updateAlertSettings: (data: any) =>
+    request("/api/v2/settings/alerts", { method: "PUT", body: JSON.stringify(data) }),
 
-  // ── API v2: Workflows ──────────────────────────────────────
-  v2: {
-    // Workflows
-    getWorkflow: (jobId: string) =>
-      request<import("./types").WorkflowJob>(`/api/v2/workflows/${jobId}`),
-    retryWorkflow: (jobId: string, stepIndex?: number) =>
-      request<import("./types").WorkflowJob>(`/api/v2/workflows/${jobId}/retry`, {
-        method: "POST",
-        body: JSON.stringify(stepIndex !== undefined ? { step_index: stepIndex } : {}),
-      }),
-    cancelWorkflow: (jobId: string) =>
-      request<{ status: string }>(`/api/v2/workflows/${jobId}/cancel`, { method: "POST" }),
-    retryStep: (jobId: string, stepIndex: number) =>
-      request<import("./types").WorkflowJob>(`/api/v2/workflows/${jobId}/steps/${stepIndex}/retry`, {
-        method: "POST",
-      }),
+  // ── Workflows (v2) ─────────────────────────────────────────
+  getWorkflow: (jobId: string) =>
+    request<import("./types").WorkflowJob>(`/api/v2/workflows/${jobId}`),
+  retryWorkflow: (jobId: string, stepIndex?: number) =>
+    request<import("./types").WorkflowJob>(`/api/v2/workflows/${jobId}/retry`, {
+      method: "POST",
+      body: JSON.stringify(stepIndex !== undefined ? { step_index: stepIndex } : {}),
+    }),
+  cancelWorkflow: (jobId: string) =>
+    request<{ status: string }>(`/api/v2/workflows/${jobId}/cancel`, { method: "POST" }),
+  retryStep: (jobId: string, stepIndex: number) =>
+    request<import("./types").WorkflowJob>(`/api/v2/workflows/${jobId}/steps/${stepIndex}/retry`, {
+      method: "POST",
+    }),
 
-    // Tenant workflows
-    startTenantSetup: (tenantId: string) =>
-      request<import("./types").WorkflowJob>(`/api/v2/tenants/${tenantId}/setup`, { method: "POST" }),
-    startMailboxPipeline: (tenantId: string, data: {
-      domain: string;
-      mailbox_count?: number;
-      cf_email?: string;
-      cf_api_key?: string;
-      custom_names?: string[];
-    }) =>
-      request<import("./types").WorkflowJob>(
-        `/api/v2/tenants/${tenantId}/mailboxes?domain=${encodeURIComponent(data.domain)}&mailbox_count=${data.mailbox_count || 50}`,
-        { method: "POST" },
-      ),
-
-    // Mailboxes
-    listMailboxes: (tenantId: string) =>
-      request<import("./types").Mailbox[]>(`/api/v2/mailboxes/tenant/${tenantId}`),
-    retryMailbox: (mailboxId: string) =>
-      request<any>(`/api/v2/mailboxes/${mailboxId}/retry`, { method: "POST" }),
-
-    // Monitoring
-    dashboardStats: () =>
-      request<import("./types").DashboardStats>("/api/v2/monitoring/dashboard"),
-
-    // Audit
-    listAuditEvents: (params?: { tenant_id?: string; job_id?: string; limit?: number; offset?: number }) => {
-      const qs = new URLSearchParams();
-      if (params?.tenant_id) qs.set("tenant_id", params.tenant_id);
-      if (params?.job_id) qs.set("job_id", params.job_id);
-      if (params?.limit) qs.set("limit", String(params.limit));
-      if (params?.offset) qs.set("offset", String(params.offset));
-      return request<import("./types").AuditEvent[]>(`/api/v2/audit?${qs.toString()}`);
-    },
+  // ── Audit (v2) ─────────────────────────────────────────────
+  listAuditEvents: (params?: { tenant_id?: string; job_id?: string; limit?: number; offset?: number }) => {
+    const qs = new URLSearchParams();
+    if (params?.tenant_id) qs.set("tenant_id", params.tenant_id);
+    if (params?.job_id) qs.set("job_id", params.job_id);
+    if (params?.limit) qs.set("limit", String(params.limit));
+    if (params?.offset) qs.set("offset", String(params.offset));
+    return request<import("./types").AuditEvent[]>(`/api/v2/monitoring/audit?${qs.toString()}`);
   },
 };

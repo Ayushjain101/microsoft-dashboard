@@ -19,7 +19,7 @@ export default function AuditLogPage() {
 
   const { data: events = [], isLoading } = useQuery<AuditEvent[]>({
     queryKey: ["audit", offset, tenantFilter, jobFilter],
-    queryFn: () => api.v2.listAuditEvents({ tenant_id: tenantFilter || undefined, job_id: jobFilter || undefined, limit: PAGE_SIZE, offset }),
+    queryFn: () => api.listAuditEvents({ tenant_id: tenantFilter || undefined, job_id: jobFilter || undefined, limit: PAGE_SIZE, offset }),
   });
 
   const filtered = eventTypeFilter

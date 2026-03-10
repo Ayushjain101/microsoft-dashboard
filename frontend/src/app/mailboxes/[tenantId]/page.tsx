@@ -22,7 +22,7 @@ export default function TenantMailboxesPage() {
     queryFn: () => api.listMailboxes(tenantId),
   });
 
-  const mailboxes: Mailbox[] = data?.mailboxes ?? [];
+  const mailboxes: Mailbox[] = Array.isArray(data) ? data : (data as any)?.mailboxes ?? [];
 
   const filtered = mailboxes.filter(m => {
     if (searchQuery && !m.email.toLowerCase().includes(searchQuery.toLowerCase()) && !m.display_name?.toLowerCase().includes(searchQuery.toLowerCase())) return false;
@@ -34,7 +34,7 @@ export default function TenantMailboxesPage() {
   });
 
   function handleExport() {
-    window.open(`/api/v1/mailboxes/${tenantId}/export`, "_blank");
+    api.exportMailboxesCsv(tenantId);
   }
 
   if (authenticated === null) return null;

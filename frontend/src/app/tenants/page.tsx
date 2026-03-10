@@ -7,6 +7,7 @@ import { api } from "@/lib/api";
 import { Tenant, TenantDomain, WSEvent } from "@/lib/types";
 import { useWebSocket } from "@/hooks/useWebSocket";
 import { useAuth } from "@/hooks/useAuth";
+import { useToast } from "@/components/ui/Toast";
 import Sidebar from "@/components/layout/Sidebar";
 import TenantSetupProgress from "@/components/tenants/TenantSetupProgress";
 import TenantHealthResults from "@/components/tenants/TenantHealthResults";
@@ -27,6 +28,7 @@ const STATUS_COLORS: Record<string, string> = {
 
 export default function TenantsPage() {
   const authenticated = useAuth();
+  const toast = useToast();
   const queryClient = useQueryClient();
   const [page, setPage] = useState(1);
   const [filter, setFilter] = useState("");
@@ -83,14 +85,14 @@ export default function TenantsPage() {
     : tenants;
 
   async function handleSetup(id: string) {
-    try { await api.setupTenant(id); queryClient.invalidateQueries({ queryKey: ["tenants"] }); } catch (e: any) { alert(e.message); }
+    try { await api.setupTenant(id); queryClient.invalidateQueries({ queryKey: ["tenants"] }); } catch (e: any) { toast.error(e.message); }
   }
   async function handleRetry(id: string) {
-    try { await api.retryTenant(id); queryClient.invalidateQueries({ queryKey: ["tenants"] }); } catch (e: any) { alert(e.message); }
+    try { await api.retryTenant(id); queryClient.invalidateQueries({ queryKey: ["tenants"] }); } catch (e: any) { toast.error(e.message); }
   }
   async function handleDelete(id: string) {
     if (!confirm("Delete this tenant?")) return;
-    try { await api.deleteTenant(id); queryClient.invalidateQueries({ queryKey: ["tenants"] }); } catch (e: any) { alert(e.message); }
+    try { await api.deleteTenant(id); queryClient.invalidateQueries({ queryKey: ["tenants"] }); } catch (e: any) { toast.error(e.message); }
   }
   async function handleDownload(id: string) {
     try {
@@ -100,20 +102,20 @@ export default function TenantsPage() {
       const a = document.createElement("a");
       a.href = url; a.download = `credentials_${id}.json`; a.click();
       URL.revokeObjectURL(url);
-    } catch (e: any) { alert(e.message); }
+    } catch (e: any) { toast.error(e.message); }
   }
   async function handleHealthCheck(id: string) {
     setHealthChecking((prev) => ({ ...prev, [id]: true }));
     setExpandedId(id);
     try { await api.healthCheckTenant(id); } catch (e: any) {
-      alert(e.message);
+      toast.error(e.message);
       setHealthChecking((prev) => ({ ...prev, [id]: false }));
     }
   }
   async function handleFixHealth(id: string) {
     setFixing((prev) => ({ ...prev, [id]: true }));
     try { await api.fixHealth(id); } catch (e: any) {
-      alert(e.message);
+      toast.error(e.message);
       setFixing((prev) => ({ ...prev, [id]: false }));
     }
   }
@@ -122,7 +124,7 @@ export default function TenantsPage() {
     const ids = selectedIds.size > 0
       ? Array.from(selectedIds).filter(id => tenants.find(t => t.id === id && t.status === "complete"))
       : tenants.filter(t => t.status === "complete").map(t => t.id);
-    if (ids.length === 0) { alert("No complete tenants to check"); return; }
+    if (ids.length === 0) { toast.error("No complete tenants to check"); return; }
     for (const id of ids) {
       setHealthChecking((prev) => ({ ...prev, [id]: true }));
       try { await api.healthCheckTenant(id); } catch {}
@@ -136,7 +138,7 @@ export default function TenantsPage() {
           return t?.status === "complete" && getHealthSummary(t)?.hasIssues;
         })
       : tenants.filter(t => t.status === "complete" && getHealthSummary(t)?.hasIssues).map(t => t.id);
-    if (ids.length === 0) { alert("No tenants with fixable issues"); return; }
+    if (ids.length === 0) { toast.error("No tenants with fixable issues"); return; }
     for (const id of ids) {
       setFixing((prev) => ({ ...prev, [id]: true }));
       try { await api.fixHealth(id); } catch {}
@@ -151,7 +153,7 @@ export default function TenantsPage() {
       setEditingTenant(null);
       setEditPassword("");
       queryClient.invalidateQueries({ queryKey: ["tenants"] });
-    } catch (e: any) { alert(e.message); }
+    } catch (e: any) { toast.error(e.message); }
     finally { setEditSaving(false); }
   }
 

@@ -6,6 +6,7 @@ import { api } from "@/lib/api";
 import { Tenant, MailboxJob, WSEvent, BulkMailboxResult, MailboxHealthResult, RetryMissingResult } from "@/lib/types";
 import { useWebSocket } from "@/hooks/useWebSocket";
 import { useAuth } from "@/hooks/useAuth";
+import { useToast } from "@/components/ui/Toast";
 import Sidebar from "@/components/layout/Sidebar";
 import MailboxPipelineProgress from "@/components/mailboxes/MailboxPipelineProgress";
 import {
@@ -15,6 +16,7 @@ import {
 
 export default function MailboxesPage() {
   const authenticated = useAuth();
+  const toast = useToast();
   const queryClient = useQueryClient();
   const [expandedJobs, setExpandedJobs] = useState<Set<string>>(new Set());
   const [dkimLoading, setDkimLoading] = useState<Set<string>>(new Set());
@@ -78,7 +80,7 @@ export default function MailboxesPage() {
       else { setRetryLoading(prev => { const n = new Set(prev); n.delete(event.job_id!); return n; }); setRetryResults(prev => ({ ...prev, [event.job_id!]: r })); setHealthResults(prev => { const n = { ...prev }; delete n[event.job_id!]; return n; }); }
     }
     if (event.type === "fix_security_defaults" && event.tenant_id) { setFixLoading(prev => { const n = new Set(prev); n.delete(event.tenant_id!); return n; }); setFixResults(prev => ({ ...prev, [event.tenant_id!]: { status: event.status || "complete", detail: event.detail, error: event.error } })); }
-    if (event.type === "dkim_enabled" && event.job_id) { setDkimLoading(prev => { const n = new Set(prev); n.delete(event.job_id!); return n; }); if (event.success) queryClient.invalidateQueries({ queryKey: ["mailbox-jobs"] }); else alert(`DKIM failed: ${event.error}`); }
+    if (event.type === "dkim_enabled" && event.job_id) { setDkimLoading(prev => { const n = new Set(prev); n.delete(event.job_id!); return n; }); if (event.success) queryClient.invalidateQueries({ queryKey: ["mailbox-jobs"] }); else toast.error(`DKIM failed: ${event.error}`); }
   }, [queryClient]);
 
   useWebSocket(onWsMessage);
@@ -90,13 +92,13 @@ export default function MailboxesPage() {
     e.preventDefault();
     if (selectedTenants.size === 0) return;
     const missing = Array.from(selectedTenants).filter(id => !domainMap[id]?.trim());
-    if (missing.length > 0) { alert("Please enter a domain for all selected tenants"); return; }
+    if (missing.length > 0) { toast.error("Please enter a domain for all selected tenants"); return; }
     setLoading(true); setResult(null);
     try {
       let customNames: string[] | undefined;
       if (useCustomNames) {
         const m = []; for (let i = 0; i < customNameCount; i++) { if (!firstNames[i]?.trim() || !lastNames[i]?.trim()) m.push(i + 1); }
-        if (m.length > 0) { alert(`Fill in both names for row(s): ${m.join(", ")}`); setLoading(false); return; }
+        if (m.length > 0) { toast.error(`Fill in both names for row(s): ${m.join(", ")}`); setLoading(false); return; }
         customNames = Array.from({ length: customNameCount }, (_, i) => `${firstNames[i].trim()} ${lastNames[i].trim()}`);
       }
       const items = Array.from(selectedTenants).map(id => ({ tenant_id: id, domain: domainMap[id].trim(), mailbox_count: count, ...(customNames ? { custom_names: customNames } : {}) }));
@@ -104,7 +106,7 @@ export default function MailboxesPage() {
       setResult(res);
       queryClient.invalidateQueries({ queryKey: ["mailbox-jobs"] });
       setSelectedTenants(new Set()); setDomainMap({});
-    } catch (err: any) { alert(err.message); } finally { setLoading(false); }
+    } catch (err: any) { toast.error(err.message); } finally { setLoading(false); }
   }
 
   async function handleCsvCreate(e: React.FormEvent) {
@@ -116,13 +118,13 @@ export default function MailboxesPage() {
       setResult(res);
       queryClient.invalidateQueries({ queryKey: ["mailbox-jobs"] });
       setCsvFile(null);
-    } catch (err: any) { alert(err.message); } finally { setLoading(false); }
+    } catch (err: any) { toast.error(err.message); } finally { setLoading(false); }
   }
 
-  async function handleEnableDkim(jobId: string) { setDkimLoading(prev => new Set(prev).add(jobId)); try { await api.enableDkim(jobId); } catch (err: any) { setDkimLoading(prev => { const n = new Set(prev); n.delete(jobId); return n; }); alert(err.message); } }
-  async function handleHealthCheck(jobId: string) { setHealthLoading(prev => new Set(prev).add(jobId)); try { await api.healthCheckMailboxes(jobId); } catch (err: any) { setHealthLoading(prev => { const n = new Set(prev); n.delete(jobId); return n; }); alert(err.message); } }
-  async function handleRetryMissing(jobId: string) { setRetryLoading(prev => new Set(prev).add(jobId)); try { await api.retryMissingMailboxes(jobId); } catch (err: any) { setRetryLoading(prev => { const n = new Set(prev); n.delete(jobId); return n; }); alert(err.message); } }
-  async function handleFixSecurityDefaults(tenantId: string) { setFixLoading(prev => new Set(prev).add(tenantId)); try { await api.fixSecurityDefaults(tenantId); } catch (err: any) { setFixLoading(prev => { const n = new Set(prev); n.delete(tenantId); return n; }); alert(err.message); } }
+  async function handleEnableDkim(jobId: string) { setDkimLoading(prev => new Set(prev).add(jobId)); try { await api.enableDkim(jobId); } catch (err: any) { setDkimLoading(prev => { const n = new Set(prev); n.delete(jobId); return n; }); toast.error(err.message); } }
+  async function handleHealthCheck(jobId: string) { setHealthLoading(prev => new Set(prev).add(jobId)); try { await api.healthCheckMailboxes(jobId); } catch (err: any) { setHealthLoading(prev => { const n = new Set(prev); n.delete(jobId); return n; }); toast.error(err.message); } }
+  async function handleRetryMissing(jobId: string) { setRetryLoading(prev => new Set(prev).add(jobId)); try { await api.retryMissingMailboxes(jobId); } catch (err: any) { setRetryLoading(prev => { const n = new Set(prev); n.delete(jobId); return n; }); toast.error(err.message); } }
+  async function handleFixSecurityDefaults(tenantId: string) { setFixLoading(prev => new Set(prev).add(tenantId)); try { await api.fixSecurityDefaults(tenantId); } catch (err: any) { setFixLoading(prev => { const n = new Set(prev); n.delete(tenantId); return n; }); toast.error(err.message); } }
 
   function parseCurrentStep(phase: string | null): number | null { if (!phase) return null; const m = phase.match(/^Step (\d+)\//); return m ? parseInt(m[1], 10) : null; }
 
@@ -285,9 +287,9 @@ export default function MailboxesPage() {
             {selectedJobTenantIds.size > 0 && (
               <>
                 <button onClick={() => api.exportAllMailboxesCsv(Array.from(selectedJobTenantIds))} className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium bg-blue-600 text-white rounded-lg hover:bg-blue-700"><FileDown size={14} /> Export ({selectedJobTenantIds.size})</button>
-                <button onClick={() => { const ej = jobs.filter(j => selectedJobTenantIds.has(j.tenant_id) && (j.status === "complete" || j.status === "failed")); if (!ej.length) { alert("No eligible jobs"); return; } ej.forEach(j => handleRetryMissing(j.id)); }} className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium bg-orange-500 text-white rounded-lg hover:bg-orange-600"><RefreshCw size={14} /> Retry Missing</button>
-                <button onClick={() => { const ej = jobs.filter(j => selectedJobTenantIds.has(j.tenant_id) && (j.status === "complete" || j.status === "failed")); if (!ej.length) { alert("No eligible jobs"); return; } ej.forEach(j => handleHealthCheck(j.id)); }} className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium bg-pink-500 text-white rounded-lg hover:bg-pink-600"><HeartPulse size={14} /> Health Check</button>
-                <button onClick={() => { const tids = new Set(jobs.filter(j => selectedJobTenantIds.has(j.tenant_id) && (j.status === "complete" || j.status === "failed")).map(j => j.tenant_id)); if (!tids.size) { alert("No eligible jobs"); return; } tids.forEach(tid => handleFixSecurityDefaults(tid)); }} className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium bg-indigo-500 text-white rounded-lg hover:bg-indigo-600"><Lock size={14} /> Fix SMTP Auth</button>
+                <button onClick={() => { const ej = jobs.filter(j => selectedJobTenantIds.has(j.tenant_id) && (j.status === "complete" || j.status === "failed")); if (!ej.length) { toast.error("No eligible jobs"); return; } ej.forEach(j => handleRetryMissing(j.id)); }} className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium bg-orange-500 text-white rounded-lg hover:bg-orange-600"><RefreshCw size={14} /> Retry Missing</button>
+                <button onClick={() => { const ej = jobs.filter(j => selectedJobTenantIds.has(j.tenant_id) && (j.status === "complete" || j.status === "failed")); if (!ej.length) { toast.error("No eligible jobs"); return; } ej.forEach(j => handleHealthCheck(j.id)); }} className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium bg-pink-500 text-white rounded-lg hover:bg-pink-600"><HeartPulse size={14} /> Health Check</button>
+                <button onClick={() => { const tids = new Set(jobs.filter(j => selectedJobTenantIds.has(j.tenant_id) && (j.status === "complete" || j.status === "failed")).map(j => j.tenant_id)); if (!tids.size) { toast.error("No eligible jobs"); return; } tids.forEach(tid => handleFixSecurityDefaults(tid)); }} className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium bg-indigo-500 text-white rounded-lg hover:bg-indigo-600"><Lock size={14} /> Fix SMTP Auth</button>
               </>
             )}
           </div>
@@ -340,13 +342,13 @@ export default function MailboxesPage() {
                       <td className="px-4 py-3 text-xs text-gray-500">{new Date(j.created_at).toLocaleString()}</td>
                       <td className="px-4 py-3 text-right" onClick={e => e.stopPropagation()}>
                         <div className="flex items-center justify-end gap-0.5">
-                          {j.status === "running" && <button onClick={async () => { try { await api.stopJob(j.id); queryClient.invalidateQueries({ queryKey: ["mailbox-jobs"] }); } catch (err: any) { alert(err.message); } }} className="p-1.5 hover:bg-red-50 rounded-lg" title="Stop"><StopCircle size={15} className="text-red-500" /></button>}
+                          {j.status === "running" && <button onClick={async () => { try { await api.stopJob(j.id); queryClient.invalidateQueries({ queryKey: ["mailbox-jobs"] }); } catch (err: any) { toast.error(err.message); } }} className="p-1.5 hover:bg-red-50 rounded-lg" title="Stop"><StopCircle size={15} className="text-red-500" /></button>}
                           {(j.status === "complete" || j.status === "failed") && (
                             <>
                               {healthLoading.has(j.id) ? <span className="p-1.5"><Loader2 size={15} className="text-pink-500 animate-spin" /></span> : <button onClick={() => handleHealthCheck(j.id)} className="p-1.5 hover:bg-pink-50 rounded-lg" title="Health check"><HeartPulse size={15} className={healthResults[j.id]?.status === "complete" && !healthResults[j.id]?.missing?.length ? "text-green-500" : "text-pink-500"} /></button>}
                               {retryLoading.has(j.id) ? <span className="p-1.5"><Loader2 size={15} className="text-orange-500 animate-spin" /></span> : <button onClick={() => handleRetryMissing(j.id)} className="p-1.5 hover:bg-orange-50 rounded-lg" title="Retry missing"><RefreshCw size={15} className="text-orange-500" /></button>}
                               {j.status === "complete" && (j.dkim_enabled ? <span className="p-1.5"><ShieldCheck size={15} className="text-green-600" /></span> : dkimLoading.has(j.id) ? <span className="p-1.5"><Loader2 size={15} className="text-purple-500 animate-spin" /></span> : <button onClick={() => handleEnableDkim(j.id)} className="p-1.5 hover:bg-purple-50 rounded-lg" title="Enable DKIM"><Shield size={15} className="text-purple-500" /></button>)}
-                              <button onClick={() => window.open(`/api/v1/mailboxes/${j.tenant_id}/export`, "_blank")} className="p-1.5 hover:bg-green-50 rounded-lg" title="Export"><Download size={15} className="text-green-600" /></button>
+                              <button onClick={() => api.exportMailboxesCsv(j.tenant_id)} className="p-1.5 hover:bg-green-50 rounded-lg" title="Export"><Download size={15} className="text-green-600" /></button>
                             </>
                           )}
                         </div>

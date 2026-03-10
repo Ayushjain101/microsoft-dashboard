@@ -5,6 +5,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/lib/api";
 import { TOTPEntry } from "@/lib/types";
 import { useAuth } from "@/hooks/useAuth";
+import { useToast } from "@/components/ui/Toast";
 import Sidebar from "@/components/layout/Sidebar";
 import { KeyRound, Copy, Check, Trash2, Plus, Search, X, Loader2 } from "lucide-react";
 
@@ -30,6 +31,7 @@ function CountdownRing({ remaining, period }: { remaining: number; period: numbe
 
 export default function TOTPPage() {
   const authenticated = useAuth();
+  const toast = useToast();
   const queryClient = useQueryClient();
   const [entries, setEntries] = useState<TOTPEntry[]>([]);
   const [search, setSearch] = useState("");
@@ -74,7 +76,7 @@ export default function TOTPPage() {
       setEntries((prev) => prev.filter((e) => e.tenant_id !== tenantId));
       setDeleteConfirm(null);
       queryClient.invalidateQueries({ queryKey: ["totp"] });
-    } catch (e: any) { alert("Failed to delete: " + e.message); }
+    } catch (e: any) { toast.error("Failed to delete: " + e.message); }
   }
 
   if (authenticated === null) return null;

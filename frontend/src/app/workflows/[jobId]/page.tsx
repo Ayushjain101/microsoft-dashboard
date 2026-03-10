@@ -12,6 +12,7 @@ import {
   ArrowLeft, CheckCircle2, XCircle, AlertTriangle, Clock,
   Loader2, RotateCcw, Ban, SkipForward,
 } from "lucide-react";
+import { useToast } from "@/components/ui/Toast";
 
 const STATUS_CONFIG: Record<string, { icon: React.ReactNode; color: string; bg: string }> = {
   pending: { icon: <Clock className="w-4 h-4" />, color: "text-gray-400", bg: "bg-gray-50" },
@@ -32,10 +33,11 @@ export default function WorkflowDetailPage() {
   const queryClient = useQueryClient();
   const jobId = params.jobId as string;
   const [retryingStep, setRetryingStep] = useState<number | null>(null);
+  const toast = useToast();
 
   const { data: job, isLoading } = useQuery<WorkflowJob>({
     queryKey: ["workflow", jobId],
-    queryFn: () => api.v2.getWorkflow(jobId),
+    queryFn: () => api.getWorkflow(jobId),
     refetchInterval: (query) => {
       const data = query.state.data;
       if (data && ["running", "queued"].includes(data.status)) return 3000;
@@ -51,20 +53,20 @@ export default function WorkflowDetailPage() {
 
   async function handleRetryStep(stepIndex: number) {
     setRetryingStep(stepIndex);
-    try { await api.v2.retryStep(jobId, stepIndex); queryClient.invalidateQueries({ queryKey: ["workflow", jobId] }); }
-    catch (e: any) { alert(e.message); }
+    try { await api.retryStep(jobId, stepIndex); queryClient.invalidateQueries({ queryKey: ["workflow", jobId] }); toast.success("Step retry started"); }
+    catch (e: any) { toast.error(e.message); }
     finally { setRetryingStep(null); }
   }
 
   async function handleRetryAll() {
-    try { await api.v2.retryWorkflow(jobId); queryClient.invalidateQueries({ queryKey: ["workflow", jobId] }); }
-    catch (e: any) { alert(e.message); }
+    try { await api.retryWorkflow(jobId); queryClient.invalidateQueries({ queryKey: ["workflow", jobId] }); toast.success("Workflow retry started"); }
+    catch (e: any) { toast.error(e.message); }
   }
 
   async function handleCancel() {
     if (!confirm("Cancel this workflow?")) return;
-    try { await api.v2.cancelWorkflow(jobId); queryClient.invalidateQueries({ queryKey: ["workflow", jobId] }); }
-    catch (e: any) { alert(e.message); }
+    try { await api.cancelWorkflow(jobId); queryClient.invalidateQueries({ queryKey: ["workflow", jobId] }); toast.info("Workflow cancelled"); }
+    catch (e: any) { toast.error(e.message); }
   }
 
   if (authenticated === null) return null;
