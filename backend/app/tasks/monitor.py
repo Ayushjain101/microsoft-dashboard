@@ -45,6 +45,20 @@ def _save_check(tenant_id: str, mailbox_id: str | None, check_type: str,
 
 def _create_alert(tenant_id: str, alert_type: str, severity: str, message: str):
     with Session(sync_engine) as db:
+        # Skip if an unacknowledged alert already exists for this tenant+type
+        existing = db.execute(
+            select(Alert).where(
+                Alert.tenant_id == tenant_id,
+                Alert.alert_type == alert_type,
+                Alert.acknowledged == False,
+            )
+        ).scalar_one_or_none()
+        if existing:
+            # Update the message and timestamp instead of creating a duplicate
+            existing.message = message
+            existing.created_at = datetime.now(timezone.utc)
+            db.commit()
+            return
         db.add(Alert(
             tenant_id=tenant_id,
             alert_type=alert_type,
