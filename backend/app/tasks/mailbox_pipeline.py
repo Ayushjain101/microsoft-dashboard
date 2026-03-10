@@ -164,6 +164,8 @@ def run_mailbox_pipeline(self, job_id: str):
 
         job.status = "running"
         job.step_results = {}
+        job.error_message = None
+        job.current_phase = None
         db.commit()
 
     pfx_path = None
@@ -779,6 +781,7 @@ def run_mailbox_pipeline(self, job_id: str):
                     if job:
                         job.status = "complete"
                         job.current_phase = None
+                        job.error_message = None
                         job.completed_at = datetime.now(timezone.utc)
                         db.commit()
                 break
