@@ -160,8 +160,8 @@ async def _bulk_create_jobs(
         await db.refresh(job)
 
         await log_audit(
-            db, "mailbox.bulk_pipeline_started", tenant_id=tenant_id, job_id=job.id,
-            payload={"domain": item.domain, "mailbox_count": item.mailbox_count},
+            db, "mailbox.bulk_pipeline_started", tenant_id=tenant_id,
+            payload={"mailbox_job_id": str(job.id), "domain": item.domain, "mailbox_count": item.mailbox_count},
         )
 
         task = run_mailbox_pipeline.delay(str(job.id))
@@ -368,7 +368,8 @@ async def stop_job(job_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
         from app.tasks.celery_app import celery_app
         celery_app.control.revoke(job.celery_task_id, terminate=True)
     job.status = "stopped"
-    await log_audit(db, "mailbox.job_stopped", tenant_id=job.tenant_id, job_id=job.id)
+    await log_audit(db, "mailbox.job_stopped", tenant_id=job.tenant_id,
+                    payload={"mailbox_job_id": str(job.id)})
     await db.commit()
     return {"status": "stopped"}
 
@@ -397,7 +398,8 @@ async def retry_missing_mailboxes(job_id: uuid.UUID, db: AsyncSession = Depends(
         raise HTTPException(status_code=409, detail="Job must be complete or failed to retry missing")
 
     from app.tasks.mailbox_pipeline import retry_missing_mailboxes as retry_task
-    await log_audit(db, "mailbox.retry_missing", tenant_id=job.tenant_id, job_id=job.id)
+    await log_audit(db, "mailbox.retry_missing", tenant_id=job.tenant_id,
+                    payload={"mailbox_job_id": str(job.id)})
     await db.commit()
     retry_task.delay(str(job.id))
     return {"status": "queued"}
@@ -413,8 +415,8 @@ async def enable_dkim(job_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
         raise HTTPException(status_code=409, detail="Job must be complete before enabling DKIM")
 
     from app.tasks.mailbox_pipeline import enable_dkim_task
-    await log_audit(db, "mailbox.dkim_enabled", tenant_id=job.tenant_id, job_id=job.id,
-                    payload={"domain": job.domain})
+    await log_audit(db, "mailbox.dkim_enabled", tenant_id=job.tenant_id,
+                    payload={"mailbox_job_id": str(job.id), "domain": job.domain})
     await db.commit()
     enable_dkim_task.delay(str(job.id))
     return {"status": "queued"}

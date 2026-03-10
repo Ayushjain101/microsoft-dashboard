@@ -86,7 +86,7 @@ export const api = {
 
   // ── Mailboxes (v2) ──────────────────────────────────────────
   listMailboxes: (tenantId: string) =>
-    request<import("./types").Mailbox[]>(`/api/v2/mailboxes/tenant/${tenantId}`),
+    request<{ mailboxes: import("./types").Mailbox[] }>(`/api/v2/mailboxes/tenant/${tenantId}`),
   exportMailboxesCsv: (tenantId: string) => {
     window.open(`${API_URL}/api/v2/mailboxes/tenant/${tenantId}/export`, "_blank");
   },
