@@ -1491,16 +1491,24 @@ def retry_missing_mailboxes(self, job_id: str):
                 actual_count = db.execute(
                     select(Mailbox).where(Mailbox.tenant_id == tenant_id, Mailbox.email.like(f"%@{domain}"))
                 ).scalars().all()
-                total_ok = len(actual_count)
-                total_failed = job.mailbox_count - total_ok
-                step7_detail = f"Created: {total_ok}, Existed: 0, Failed: {total_failed}"
+                total_in_db = len(actual_count)
+                requested = job.mailbox_count
+                # Cap at requested count — retry may have created extras
+                total_ok = min(total_in_db, requested)
+                total_failed = max(0, requested - total_in_db)
+                step7_detail = f"Created: {total_in_db}, Existed: 0, Failed: {total_failed}"
+                if total_in_db > requested:
+                    step7_detail = f"Created: {total_in_db} (requested {requested}), Failed: 0"
                 if not job.step_results:
                     job.step_results = {}
                 job.step_results["7"] = {
-                    "status": "success" if total_failed == 0 else "warning",
+                    "status": "success" if total_in_db >= requested else "warning",
                     "message": "",
                     "detail": step7_detail,
                 }
+                # Also update mailbox_count to reflect actual count
+                if total_in_db > requested:
+                    job.mailbox_count = total_in_db
                 flag_modified(job, "step_results")
                 db.commit()
 
