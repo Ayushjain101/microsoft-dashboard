@@ -8,7 +8,7 @@ import { useAuth } from "@/hooks/useAuth";
 import Sidebar from "@/components/layout/Sidebar";
 import {
   Activity, AlertTriangle, CheckCircle, XCircle, Bell, Mail,
-  Search, Filter, Loader2,
+  Search, Filter, Loader2, Trash2, CheckCheck,
 } from "lucide-react";
 
 export default function MonitorPage() {
@@ -42,9 +42,51 @@ export default function MonitorPage() {
     return true;
   });
 
+  const [bulkLoading, setBulkLoading] = useState<string | null>(null);
+
   async function handleAck(id: number) {
     await api.ackAlert(id);
     queryClient.invalidateQueries({ queryKey: ["alerts"] });
+    queryClient.invalidateQueries({ queryKey: ["monitor-dashboard"] });
+  }
+
+  async function handleDelete(id: number) {
+    if (!confirm("Delete this alert?")) return;
+    await api.deleteAlert(id);
+    queryClient.invalidateQueries({ queryKey: ["alerts"] });
+    queryClient.invalidateQueries({ queryKey: ["monitor-dashboard"] });
+  }
+
+  async function handleBulkAck() {
+    const unacked = alerts.filter(a => !a.acknowledged).length;
+    if (!unacked || !confirm(`Acknowledge all ${unacked} unacknowledged alerts?`)) return;
+    setBulkLoading("ack");
+    try {
+      await api.bulkAckAlerts();
+      queryClient.invalidateQueries({ queryKey: ["alerts"] });
+      queryClient.invalidateQueries({ queryKey: ["monitor-dashboard"] });
+    } finally { setBulkLoading(null); }
+  }
+
+  async function handleBulkDeleteAcked() {
+    const acked = alerts.filter(a => a.acknowledged).length;
+    if (!acked || !confirm(`Delete all ${acked} acknowledged alerts?`)) return;
+    setBulkLoading("del-acked");
+    try {
+      await api.bulkDeleteAlerts({ all_acknowledged: true });
+      queryClient.invalidateQueries({ queryKey: ["alerts"] });
+      queryClient.invalidateQueries({ queryKey: ["monitor-dashboard"] });
+    } finally { setBulkLoading(null); }
+  }
+
+  async function handleBulkDeleteAll() {
+    if (!alerts.length || !confirm(`Delete ALL ${alerts.length} alerts? This cannot be undone.`)) return;
+    setBulkLoading("del-all");
+    try {
+      await api.bulkDeleteAlerts({ all: true });
+      queryClient.invalidateQueries({ queryKey: ["alerts"] });
+      queryClient.invalidateQueries({ queryKey: ["monitor-dashboard"] });
+    } finally { setBulkLoading(null); }
   }
 
   return (
@@ -98,7 +140,7 @@ export default function MonitorPage() {
               {/* Alerts */}
               <div className="bg-white rounded-xl border overflow-hidden shadow-sm">
                 <div className="p-4 border-b flex items-center justify-between">
-                  <h2 className="font-semibold">Recent Alerts</h2>
+                  <h2 className="font-semibold">Recent Alerts <span className="text-xs font-normal text-gray-400">({alerts.length})</span></h2>
                   <div className="flex items-center gap-2">
                     <div className="relative">
                       <Search size={14} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-gray-400" />
@@ -110,6 +152,16 @@ export default function MonitorPage() {
                       <option value="warning">Warning</option>
                       <option value="info">Info</option>
                     </select>
+                    <div className="h-4 border-l border-gray-200" />
+                    <button onClick={handleBulkAck} disabled={!!bulkLoading} className="flex items-center gap-1 px-2.5 py-1.5 text-xs font-medium text-blue-600 hover:bg-blue-50 rounded-lg border border-blue-200 disabled:opacity-50">
+                      {bulkLoading === "ack" ? <Loader2 size={12} className="animate-spin" /> : <CheckCheck size={12} />} Ack All
+                    </button>
+                    <button onClick={handleBulkDeleteAcked} disabled={!!bulkLoading} className="flex items-center gap-1 px-2.5 py-1.5 text-xs font-medium text-amber-600 hover:bg-amber-50 rounded-lg border border-amber-200 disabled:opacity-50">
+                      {bulkLoading === "del-acked" ? <Loader2 size={12} className="animate-spin" /> : <Trash2 size={12} />} Delete Acked
+                    </button>
+                    <button onClick={handleBulkDeleteAll} disabled={!!bulkLoading} className="flex items-center gap-1 px-2.5 py-1.5 text-xs font-medium text-red-600 hover:bg-red-50 rounded-lg border border-red-200 disabled:opacity-50">
+                      {bulkLoading === "del-all" ? <Loader2 size={12} className="animate-spin" /> : <Trash2 size={12} />} Delete All
+                    </button>
                   </div>
                 </div>
                 <table className="w-full text-sm">
@@ -135,10 +187,11 @@ export default function MonitorPage() {
                         <td className="px-4 py-3 font-medium">{a.alert_type}</td>
                         <td className="px-4 py-3 text-gray-600">{a.message}</td>
                         <td className="px-4 py-3 text-xs text-gray-500">{new Date(a.created_at).toLocaleString()}</td>
-                        <td className="px-4 py-3 text-right">
+                        <td className="px-4 py-3 text-right space-x-2">
                           {!a.acknowledged && (
-                            <button onClick={() => handleAck(a.id)} className="text-xs text-blue-600 hover:text-blue-800 font-medium">Acknowledge</button>
+                            <button onClick={() => handleAck(a.id)} className="text-xs text-blue-600 hover:text-blue-800 font-medium">Ack</button>
                           )}
+                          <button onClick={() => handleDelete(a.id)} className="text-xs text-red-500 hover:text-red-700 font-medium">Delete</button>
                         </td>
                       </tr>
                     ))}

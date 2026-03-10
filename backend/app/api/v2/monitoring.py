@@ -102,6 +102,61 @@ async def acknowledge_alert(alert_id: int, db: AsyncSession = Depends(get_db)):
     return {"status": "acknowledged"}
 
 
+@router.delete("/alerts/{alert_id}")
+async def delete_alert(alert_id: int, db: AsyncSession = Depends(get_db)):
+    """Delete an alert."""
+    alert = await db.get(Alert, alert_id)
+    if not alert:
+        raise HTTPException(status_code=404, detail="Alert not found")
+    await db.delete(alert)
+    await db.commit()
+    return {"status": "deleted"}
+
+
+@router.post("/alerts/bulk-delete")
+async def bulk_delete_alerts(
+    body: dict,
+    db: AsyncSession = Depends(get_db),
+):
+    """Bulk delete alerts. Body: { "ids": [1,2,3] } or { "all_acknowledged": true } or { "all": true }"""
+    if body.get("all"):
+        result = await db.execute(select(Alert))
+        alerts = result.scalars().all()
+        for a in alerts:
+            await db.delete(a)
+        await db.commit()
+        return {"deleted": len(alerts)}
+    elif body.get("all_acknowledged"):
+        result = await db.execute(select(Alert).where(Alert.acknowledged == True))
+        alerts = result.scalars().all()
+        for a in alerts:
+            await db.delete(a)
+        await db.commit()
+        return {"deleted": len(alerts)}
+    elif body.get("ids"):
+        ids = body["ids"]
+        result = await db.execute(select(Alert).where(Alert.id.in_(ids)))
+        alerts = result.scalars().all()
+        for a in alerts:
+            await db.delete(a)
+        await db.commit()
+        return {"deleted": len(alerts)}
+    else:
+        raise HTTPException(status_code=400, detail="Provide 'ids', 'all_acknowledged', or 'all'")
+
+
+@router.post("/alerts/bulk-ack")
+async def bulk_ack_alerts(db: AsyncSession = Depends(get_db)):
+    """Acknowledge all unacknowledged alerts."""
+    result = await db.execute(select(Alert).where(Alert.acknowledged == False))
+    alerts = result.scalars().all()
+    for a in alerts:
+        a.acknowledged = True
+        a.resolved_at = datetime.now(timezone.utc)
+    await db.commit()
+    return {"acknowledged": len(alerts)}
+
+
 @router.get("/audit", response_model=list[AuditEventOut])
 async def list_audit_events(
     tenant_id: uuid.UUID | None = None,

@@ -143,6 +143,12 @@ export const api = {
     request<{ alerts: any[] }>("/api/v2/monitoring/alerts"),
   ackAlert: (id: number) =>
     request(`/api/v2/monitoring/alerts/${id}/ack`, { method: "POST" }),
+  deleteAlert: (id: number) =>
+    request(`/api/v2/monitoring/alerts/${id}`, { method: "DELETE" }),
+  bulkDeleteAlerts: (body: { ids?: number[]; all_acknowledged?: boolean; all?: boolean }) =>
+    request<{ deleted: number }>("/api/v2/monitoring/alerts/bulk-delete", { method: "POST", body: JSON.stringify(body) }),
+  bulkAckAlerts: () =>
+    request<{ acknowledged: number }>("/api/v2/monitoring/alerts/bulk-ack", { method: "POST" }),
   tenantHealth: (tenantId: string) =>
     request<any>(`/api/v2/monitoring/${tenantId}`),
   mailflowHistory: (tenantId: string) =>

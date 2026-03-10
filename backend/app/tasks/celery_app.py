@@ -56,21 +56,21 @@ celery_app.conf.update(
     task_default_queue="default",
     worker_prefetch_multiplier=1,
     beat_schedule={
-        "monitor-smtp-every-30m": {
+        "monitor-smtp-every-6h": {
             "task": "app.tasks.monitor.run_smtp_checks",
-            "schedule": crontab(minute="*/30"),
+            "schedule": crontab(minute=0, hour="*/6"),
         },
         "monitor-dns-every-6h": {
             "task": "app.tasks.monitor.run_dns_checks",
-            "schedule": crontab(minute=0, hour="*/6"),
+            "schedule": crontab(minute=30, hour="*/6"),
         },
         "reap-stale-tasks-every-5m": {
             "task": "app.tasks.monitor.reap_stale_tasks",
             "schedule": crontab(minute="*/5"),
         },
-        "monitor-mailflow-every-2h": {
+        "monitor-mailflow-every-6h": {
             "task": "app.tasks.monitor.run_mailflow_checks",
-            "schedule": crontab(minute=15, hour="*/2"),
+            "schedule": crontab(minute=15, hour="*/6"),
         },
         "retry-pending-dkim-every-2h": {
             "task": "app.tasks.mailbox_pipeline.retry_pending_dkim",
