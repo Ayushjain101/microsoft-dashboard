@@ -389,14 +389,14 @@ function HealthCheckBanner({ result: r, tenantId, fixLoading, fixResults, onFix 
       </div>
       {(r.missing?.length ?? 0) > 0 && <div className="mt-1"><span className="font-medium text-red-700">Missing ({r.missing!.length}):</span> <span className="font-mono">{r.missing!.slice(0, 10).join(", ")}{r.missing!.length > 10 ? ` +${r.missing!.length - 10}` : ""}</span></div>}
       {(r.smtp_failed?.length ?? 0) > 0 && (
-        <>
-          <div className="mt-1"><span className="font-medium text-red-700">SMTP failed ({r.smtp_failed!.length}):</span> <span className="font-mono">{r.smtp_failed!.map(f => f.email).slice(0, 5).join(", ")}</span></div>
-          <div className="mt-2">
-            {fixLoading.has(tenantId) ? <span className="text-xs text-blue-600 flex items-center gap-1"><Loader2 size={12} className="animate-spin" /> Fixing...</span> :
-             fixResults[tenantId] ? <span className={`text-xs ${fixResults[tenantId].status === "complete" ? "text-green-700" : "text-red-700"}`}>{fixResults[tenantId].status === "complete" ? fixResults[tenantId].detail : `Error: ${fixResults[tenantId].error}`}</span> :
-             <button onClick={e => { e.stopPropagation(); onFix(tenantId); }} className="inline-flex items-center gap-1.5 px-2.5 py-1 text-xs bg-blue-600 text-white rounded-lg hover:bg-blue-700"><Lock size={12} /> Fix SMTP Auth</button>}
-          </div>
-        </>
+        <div className="mt-1"><span className="font-medium text-red-700">SMTP failed ({r.smtp_failed!.length}):</span> <span className="font-mono">{r.smtp_failed!.map(f => f.email).slice(0, 5).join(", ")}</span></div>
+      )}
+      {!allGood && (
+        <div className="mt-2">
+          {fixLoading.has(tenantId) ? <span className="text-xs text-blue-600 flex items-center gap-1"><Loader2 size={12} className="animate-spin" /> Fixing...</span> :
+           fixResults[tenantId] ? <span className={`text-xs ${fixResults[tenantId].status === "complete" ? "text-green-700" : "text-red-700"}`}>{fixResults[tenantId].status === "complete" ? fixResults[tenantId].detail : `Error: ${fixResults[tenantId].error}`}</span> :
+           <button onClick={e => { e.stopPropagation(); onFix(tenantId); }} className="inline-flex items-center gap-1.5 px-2.5 py-1 text-xs bg-blue-600 text-white rounded-lg hover:bg-blue-700"><Lock size={12} /> Fix SMTP Auth</button>}
+        </div>
       )}
     </div>
   );
