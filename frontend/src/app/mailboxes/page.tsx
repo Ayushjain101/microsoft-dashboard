@@ -44,10 +44,12 @@ export default function MailboxesPage() {
   const [loading, setLoading] = useState(false);
   const [jobSearchQuery, setJobSearchQuery] = useState("");
   const [jobStatusFilter, setJobStatusFilter] = useState("");
+  const [tenantSearchQuery, setTenantSearchQuery] = useState("");
+  const [tenantFilter, setTenantFilter] = useState<"all" | "with_mailboxes" | "without_mailboxes">("all");
 
   const { data: tenantData } = useQuery({
     queryKey: ["tenants-complete"],
-    queryFn: () => api.listTenants(1, "complete"),
+    queryFn: () => api.listTenants(1, "complete", 200),
   });
 
   const { data: jobData } = useQuery({
@@ -63,8 +65,15 @@ export default function MailboxesPage() {
     },
   });
 
-  const tenants: Tenant[] = tenantData?.tenants ?? [];
+  const allTenants: Tenant[] = tenantData?.tenants ?? [];
   const jobs: MailboxJob[] = jobData?.jobs ?? [];
+
+  const tenants = allTenants.filter(t => {
+    if (tenantSearchQuery && !t.name.toLowerCase().includes(tenantSearchQuery.toLowerCase()) && !t.admin_email.toLowerCase().includes(tenantSearchQuery.toLowerCase())) return false;
+    if (tenantFilter === "with_mailboxes" && !(t.mailbox_count && t.mailbox_count > 0)) return false;
+    if (tenantFilter === "without_mailboxes" && (t.mailbox_count && t.mailbox_count > 0)) return false;
+    return true;
+  });
 
   const onWsMessage = useCallback((event: WSEvent) => {
     if (event.type === "mailbox_pipeline_progress") queryClient.invalidateQueries({ queryKey: ["mailbox-jobs"] });
@@ -193,8 +202,19 @@ export default function MailboxesPage() {
                 <form onSubmit={handleQuickCreate}>
                   <div className="mb-4">
                     <label className="block text-sm font-medium mb-2">Select Tenants</label>
+                    <div className="flex items-center gap-2 mb-2">
+                      <div className="relative flex-1">
+                        <Search size={14} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-gray-400" />
+                        <input type="text" placeholder="Search tenants..." value={tenantSearchQuery} onChange={e => setTenantSearchQuery(e.target.value)} className="w-full pl-8 pr-3 py-1.5 text-xs border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500/30" />
+                      </div>
+                      <select value={tenantFilter} onChange={e => setTenantFilter(e.target.value as any)} className="px-2 py-1.5 border rounded-lg text-xs focus:outline-none">
+                        <option value="all">All ({allTenants.length})</option>
+                        <option value="with_mailboxes">With Mailboxes</option>
+                        <option value="without_mailboxes">Without Mailboxes</option>
+                      </select>
+                    </div>
                     <div className="border rounded-xl max-h-48 overflow-y-auto">
-                      {tenants.length === 0 && <p className="px-3 py-4 text-sm text-gray-400 text-center">No completed tenants available</p>}
+                      {tenants.length === 0 && <p className="px-3 py-4 text-sm text-gray-400 text-center">{tenantSearchQuery || tenantFilter !== "all" ? "No matching tenants" : "No completed tenants available"}</p>}
                       {tenants.map(t => (
                         <label key={t.id} className="flex items-center px-3 py-2.5 hover:bg-gray-50 cursor-pointer border-b last:border-b-0">
                           <input type="checkbox" checked={selectedTenants.has(t.id)} onChange={() => toggleTenant(t.id)} className="mr-3 rounded" />

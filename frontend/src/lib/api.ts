@@ -29,9 +29,9 @@ export const api = {
     request<{ status: string }>("/api/v1/auth/verify"),
 
   // ── Tenants (v2) ────────────────────────────────────────────
-  listTenants: (page = 1, status?: string) =>
+  listTenants: (page = 1, status?: string, perPage?: number) =>
     request<{ tenants: any[]; total: number }>(
-      `/api/v2/tenants?page=${page}${status ? `&status_filter=${status}` : ""}`
+      `/api/v2/tenants?page=${page}${status ? `&status_filter=${status}` : ""}${perPage ? `&per_page=${perPage}` : ""}`
     ),
   createTenant: (data: { name: string; admin_email: string; admin_password: string; new_password?: string }) =>
     request("/api/v2/tenants", { method: "POST", body: JSON.stringify(data) }),
