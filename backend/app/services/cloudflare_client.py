@@ -16,7 +16,7 @@ class CloudflareClient:
         self._zone_cache: dict[str, str] = {}
 
         self._session = requests.Session()
-        retry = Retry(total=3, backoff_factor=1, status_forcelist=[429, 500, 502, 503])
+        retry = Retry(total=5, backoff_factor=2, status_forcelist=[429, 500, 502, 503])
         adapter = HTTPAdapter(max_retries=retry)
         self._session.mount("https://", adapter)
 
