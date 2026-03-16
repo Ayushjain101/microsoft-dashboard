@@ -1253,16 +1253,61 @@ def retry_missing_mailboxes(self, job_id: str):
                                    f"non-colliding identities from pool of {pool_size}")
 
         if not missing_emails:
-            # Update job count to reflect actual Exchange state
+            # Sync: save mailboxes that exist in Exchange but not in DB
+            synced = 0
             with Session(sync_engine) as db:
                 job_ref = db.get(MailboxJob, job_id)
+                dom = db.execute(
+                    select(Domain).where(Domain.tenant_id == tenant_id, Domain.domain == domain)
+                ).scalar_one_or_none()
+                domain_id = dom.id if dom else None
+                for email_key in exchange_emails:
+                    existing = db.execute(
+                        select(Mailbox).where(Mailbox.email == email_key)
+                    ).scalar_one_or_none()
+                    if not existing and email_key in db_map:
+                        mb = db_map[email_key]
+                        db.add(Mailbox(
+                            tenant_id=tenant_id,
+                            domain_id=domain_id,
+                            display_name=mb["display_name"],
+                            email=mb["email"],
+                            password=encrypt(mb["password"]),
+                        ))
+                        synced += 1
+                if synced:
+                    db.commit()
+                    logger.info(f"Retry job {job_id}: synced {synced} mailboxes from Exchange to DB")
+
+                # Update step_results to reflect actual count
+                if job_ref and synced:
+                    total_in_db = len(exchange_emails)
+                    requested = job_ref.mailbox_count
+                    total_failed = max(0, requested - total_in_db)
+                    step7_detail = f"Created: {total_in_db}, Existed: 0, Failed: {total_failed}"
+                    if total_in_db > requested:
+                        step7_detail = f"Created: {total_in_db} (requested {requested}), Failed: 0"
+                    if not job_ref.step_results:
+                        job_ref.step_results = {}
+                    job_ref.step_results["7"] = {
+                        "status": "success" if total_in_db >= requested else "warning",
+                        "message": "",
+                        "detail": step7_detail,
+                    }
+                    if total_in_db > requested:
+                        job_ref.mailbox_count = total_in_db
+                    flag_modified(job_ref, "step_results")
+                    db.commit()
+
                 if job_ref and len(exchange_emails) >= job_ref.mailbox_count:
                     detail_msg = "All mailboxes already exist in Exchange"
                 else:
                     detail_msg = f"Exchange has {len(exchange_emails)}/{expected_count} mailboxes"
+                if synced:
+                    detail_msg += f" (synced {synced} to DB)"
             publish_event_sync("retry_missing_result", {
                 "job_id": job_id, "status": "complete", "missing_count": 0,
-                "created": 0, "failed": 0, "detail": detail_msg,
+                "created": 0, "existed": synced, "failed": 0, "detail": detail_msg,
             })
             return {"status": "complete", "created": 0}
 
